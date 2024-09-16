@@ -13,7 +13,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
         echo "prepare data"
         mkdir -p $DATA_ROOT
         cd $DATA_ROOT
-        for f in `ls /scratch/cluster_scratch/zhongz2/debug/original_data/*.tar.gz`; do
+        for f in `ls /scratch/cluster_scratch/zhongz2/debug/data_v4_1.3/*.tar.gz`; do
             tar -xf $f;
         done
     fi
@@ -27,7 +27,7 @@ else
         echo "prepare data"
         mkdir -p $DATA_ROOT
         cd $DATA_ROOT
-        for f in `ls /data/zhongz2/temp_ST_prediction/*.tar.gz`; do
+        for f in `ls /data/zhongz2/temp_ST_prediction/data_v4_1.3/*.tar.gz`; do
             tar -xf $f;
         done
     fi
@@ -56,7 +56,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:${PORT} \
-    ST_prediction_exps.py ${NUM_GPUS} ${DATA_ROOT} ${BACKBONE} ${LR} ${BS} ${VAL_INDEX}
+    ST_prediction_exps.py ${NUM_GPUS} ${DATA_ROOT} ${BACKBONE} ${LR} ${BS} ${VAL_INDEX} False
 
 
 exit;

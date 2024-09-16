@@ -13,6 +13,7 @@ import tarfile
 import time
 from urllib.parse import urlsplit
 from sklearn.metrics import r2_score
+from scipy.stats import spearmanr
 import PIL
 PIL.Image.MAX_IMAGE_PIXELS = 12660162500
 from PIL import Image, ImageFile, ImageDraw, ImageFilter
@@ -40,9 +41,6 @@ from timm.models import is_model, model_entrypoint, load_checkpoint
 from transformers import CLIPModel, CLIPProcessor
 
 
-with open('ST_gene_list.pkl', 'rb') as fp:
-    gene_map_dict = {v: str(i) for i, v in enumerate(pickle.load(fp)['gene_list'])}
-    gene_names = list(gene_map_dict.keys())
 BACKBONE_DICT = {
     'resnet50': 2048,
     'CLIP': 512,
@@ -183,6 +181,7 @@ class Trainer:
             save_root='./outputs',
             save_every=5,
             accum_iter=1,
+            gene_names=[]
     ) -> None:
         self.gpu_id = int(os.environ["LOCAL_RANK"])
         self.device = torch.device('cuda:{}'.format(self.gpu_id))
@@ -195,6 +194,7 @@ class Trainer:
         self.accum_iter = accum_iter
         self.save_every = save_every
         self.save_root = save_root
+        self.gene_names = gene_names
 
         self.model = DDP(self.model, device_ids=[self.gpu_id])
 
@@ -276,25 +276,20 @@ class Trainer:
             
             if self.gpu_id == 0:
                 scores = r2_score_pytorch(all_preds, all_labels, multioutput='raw_values')
-                # scores = scores[~torch.isnan(scores)]
-                # scores, inds = torch.sort(scores, descending=True)
-                # items = {
-                #     '_epoch': epoch,
-                #     '_total_loss': total_loss.item(),
-                #     '_num': len(torch.where(scores>0.2)[0])
-                # }
-                # record_num = min(1000, len(scores))
-                # scores_dict = {f'{ind+1}': '{}({:.3f})'.format(gene_names[inds[ind]], scores[ind].item()) for ind in range(record_num)} # top 10
-                # scores_dict.update({f'-{len(scores)-ind}': '{}({:.3f})'.format(gene_names[inds[ind]], scores[ind].item()) for ind in range(len(scores) - record_num, len(scores))}) # bottom 10
-                # items.update(scores_dict)
-                items = [epoch, total_loss.item()] + [scores[~torch.isnan(scores)].max()] + scores.detach().cpu().numpy().tolist()
+                all_preds = all_preds.detach().cpu().numpy()
+                all_labels = all_labels.detach().cpu().numpy()
+                spearmanr_results = []
+                for j in range(all_preds.shape[1]):
+                    res = spearmanr(all_preds[:, j], all_labels[:, j])
+                    spearmanr_results.append('{:.3f}({:.3f})'.format(res.statistic, res.pvalue))
+                items = [epoch, total_loss.item()] + [scores[~torch.isnan(scores)].max().item()] + scores.detach().cpu().numpy().tolist() + spearmanr_results
                 self.loss_dicts[subset].append(items)
 
         if self.gpu_id == 0:
             for subset, v in self.loss_dicts.items():
                 column_names = ['_epoch', '_total_loss']
                 if subset == 'val':
-                    column_names += ['maxR2'] + list(gene_map_dict.keys())
+                    column_names += ['maxR2'] + self.gene_names + [v+'_spearmanr' for v in self.gene_names]
                 if len(v) > 0:
                     log_df = pd.DataFrame(v, columns=column_names)
                     log_df.to_csv(os.path.join(self.save_root, f'{subset}_e{epoch}_log.csv'), float_format='%.3f')
@@ -436,7 +431,7 @@ class PatchDataset1(Dataset):
         return self.transform(patch), label
 
 
-def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False): 
+def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, gene_names=[]): 
 
     human_slide_ids = [
         '10x_CytAssist_11mm_FFPE_Human_Colorectal_Cancer_2.0.1',
@@ -447,7 +442,7 @@ def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4,
         '10x_CytAssist_FFPE_Human_Lung_Squamous_Cell_Carcinoma_2.0.0',
         '10x_CytAssist_FFPE_Protein_Expression_Human_Tonsil_2.1.0',
         '10x_CytAssist_Fresh_Frozen_Human_Breast_Cancer_2.0.1',
-        '10x_Targeted_Visium_Human_BreastCancer_Immunology_1.2.0',
+        # '10x_Targeted_Visium_Human_BreastCancer_Immunology_1.2.0',
         '10x_V1_Breast_Cancer_Block_A_Section_1_1.1.0',
         '10x_V1_Breast_Cancer_Block_A_Section_2_1.1.0',
         '10x_Visium_FFPE_Human_Cervical_Cancer_1.3.0',
@@ -457,9 +452,9 @@ def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4,
         '10x_Visium_Human_Breast_Cancer_1.3.0',
         'ST1K4M_Human_Breast_10X_06092021_Visium',
         'ST1K4M_Human_Colon_10X_10052023_Visium_control_rep1',
-        'ST1K4M_Human_Colon_10X_10052023_Visium_control_rep2',
+        #'ST1K4M_Human_Colon_10X_10052023_Visium_control_rep2',
         'ST1K4M_Human_Colon_10X_10052023_Visium_post_xenium_rep1',
-        'ST1K4M_Human_Colon_10X_10052023_Visium_post_xenium_rep2',
+        #'ST1K4M_Human_Colon_10X_10052023_Visium_post_xenium_rep2',
         'ST1K4M_Human_Prostate_10X_06092021_Visium_cancer',
         'ST1K4M_Human_Prostate_10X_06092021_Visium_normal',
         'ST1K4M_Human_Prostate_10X_07122022_Visium'
@@ -511,7 +506,7 @@ def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4,
     train_dataset = PatchDataset1(train_data, transform=train_transform, is_train=True)
     val_dataset = PatchDataset1(val_data, transform=val_transform, is_train=False)
 
-    model = STModel(backbone=backbone)
+    model = STModel(backbone=backbone, num_outputs=len(gene_names))
 
     if fixed_backbone:
         for param in model.backbone_model.parameters():
@@ -543,8 +538,13 @@ def train_main():
     accum_iter = 1
     save_root = f'./outputs/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
 
+    with open('final_common_gene_names.pkl', 'rb') as fp:
+        gene_names = pickle.load(fp)['final_common_gene_names']
+
     ddp_setup()
-    train_dataset, val_dataset, model, optimizer = load_train_objs(val_ind=val_ind, data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone)
+    train_dataset, val_dataset, model, optimizer = \
+        load_train_objs(val_ind=val_ind, data_root=data_root, backbone=backbone, \
+            lr=lr, fixed_backbone=fixed_backbone, gene_names=gene_names)
 
     dataloaders = {
         'train':
@@ -554,7 +554,7 @@ def train_main():
             DataLoader(val_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, 
                 sampler=DistributedSampler(val_dataset, shuffle=False, drop_last=False)),
     }
-    trainer = Trainer(model, dataloaders, optimizer, save_root=save_root, save_every=save_every, accum_iter=accum_iter)
+    trainer = Trainer(model, dataloaders, optimizer, save_root=save_root, save_every=save_every, accum_iter=accum_iter, gene_names=gene_names)
     trainer.train(max_epochs=max_epochs)
     dist.destroy_process_group()
 
@@ -571,7 +571,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data resnet50 5e-4 64 8 False
+    ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data_v4_1.3 resnet50 5e-4 64 8 False
 
 NUM_GPUS=8
 torchrun \

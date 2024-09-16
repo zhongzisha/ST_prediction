@@ -112,45 +112,50 @@ def create_data():
     }
     df = df[df['slide_id'].isin(human_slide_ids)].reset_index(drop=True)
 
-    # filename = os.path.join(data_root, 'all_gene_names.pkl')
-    # if os.path.exists(filename):
-    #     with open(filename, 'rb') as fp:
-    #         all_gene_names = pickle.load(fp)['all_gene_names']
-    # else:
-    #     if idr_torch.world_size > 1:
-    #         raise ValueError("error")
-    #         sys.exit(-1)
+    if False:
+        filename = os.path.join(data_root, 'all_gene_names.pkl')
+        if os.path.exists(filename):
+            with open(filename, 'rb') as fp:
+                all_gene_names = pickle.load(fp)['all_gene_names']
+        else:
+            if idr_torch.world_size > 1:
+                raise ValueError("error")
+                sys.exit(-1)
 
+            # get common genes
+            gene_names = {}
+            for rowid, row in df.iterrows():
+                svs_prefix = row['slide_id']
+                vst_filename_db = os.path.join(root, 'vst_dir_db', svs_prefix+'_original_VST.db')
+                parquet_file = pq.ParquetFile(vst_filename_db)
+                existing_columns = parquet_file.schema.names
+                gene_names[svs_prefix] = [v for v in existing_columns if '__' != v[:2]]
+            gene_names1 = list(gene_names.values())
+            common_gene_names = sorted(list(set(gene_names1[0]).intersection(*gene_names1[1:])))
+            with open(filename, 'wb') as fp:
+                pickle.dump({'common_gene_names': common_gene_names}, fp)
 
-    # get common genes
-    gene_names = {}
-    for rowid, row in df.iterrows():
-        svs_prefix = row['slide_id']
-        vst_filename_db = os.path.join(root, 'vst_dir_db', svs_prefix+'_original_VST.db')
-        parquet_file = pq.ParquetFile(vst_filename_db)
-        existing_columns = parquet_file.schema.names
-        gene_names[svs_prefix] = [v for v in existing_columns if '__' != v[:2]]
-    gene_names1 = list(gene_names.values())
-    common_gene_names = sorted(list(set(gene_names1[0]).intersection(*gene_names1[1:])))
-    with open(filename, 'wb') as fp:
-        pickle.dump({'common_gene_names': common_gene_names}, fp)
+            protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', low_memory=False)
+            final_common_gene_names = list(set(common_gene_names).intersection(set(protein_df['Gene'].values.tolist())))
+            print(len(final_common_gene_names))
 
-    protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', low_memory=False)
-    final_common_gene_names = list(set(common_gene_names).intersection(set(protein_df['Gene'].values.tolist())))
-    print(len(final_common_gene_names))
+            # get all genes
+            gene_names = {}
+            for rowid, row in df.iterrows():
+                svs_prefix = row['slide_id']
+                vst_filename_db = os.path.join(root, 'vst_dir_db', svs_prefix+'_original_VST.db')
+                parquet_file = pq.ParquetFile(vst_filename_db)
+                existing_columns = parquet_file.schema.names
+                gene_names[svs_prefix] = [v for v in existing_columns if '__' != v[:2]]
+            gene_names1 = list(gene_names.values())
+            all_gene_names = sorted(list(set(gene_names1[0]).union(*gene_names1[1:])))
+            with open(filename, 'wb') as fp:
+                pickle.dump({'all_gene_names': all_gene_names}, fp)
 
-    # get all genes
-    gene_names = {}
-    for rowid, row in df.iterrows():
-        svs_prefix = row['slide_id']
-        vst_filename_db = os.path.join(root, 'vst_dir_db', svs_prefix+'_original_VST.db')
-        parquet_file = pq.ParquetFile(vst_filename_db)
-        existing_columns = parquet_file.schema.names
-        gene_names[svs_prefix] = [v for v in existing_columns if '__' != v[:2]]
-    gene_names1 = list(gene_names.values())
-    all_gene_names = sorted(list(set(gene_names1[0]).union(*gene_names1[1:])))
-    with open(filename, 'wb') as fp:
-        pickle.dump({'all_gene_names': all_gene_names}, fp)
+    # secreted_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', low_memory=False)
+    # secreted_gene_names = [v.upper() for v in secreted_df['Gene'].values.tolist()]
+    with open('final_common_gene_names.pkl', 'rb') as fp:
+        final_common_gene_names = pickle.load(fp)['final_common_gene_names']
 
     indices = np.arange(len(df))
     index_splits = np.array_split(indices, indices_or_sections=idr_torch.world_size) 
@@ -173,7 +178,9 @@ def create_data():
         query_columns = [col for col in existing_columns if '__' != col[:2]]
         vst_df = pd.read_parquet(vst_filename_db, columns=query_columns)
         vst_df = vst_df.clip(lower=-8, upper=8, axis=1)
-        vst_df = vst_df.rename(columns=gene_map_dict)
+        # vst_df = vst_df.rename(columns=gene_map_dict)
+        vst_df = vst_df[final_common_gene_names]
+        assert vst_df.shape[1] == len(final_common_gene_names)
 
         spot_size = row['spot_size']
         patch_size = int(np.ceil(spot_scale * spot_size)) # expand some area (10% here)
@@ -196,11 +203,12 @@ def create_data():
             im_buffer.seek(0)
             tar_fp.addfile(info, im_buffer)
 
-            labels_dict = {k:np.nan for k in list(gene_map_dict.values())}
-            labels_dict.update(row2.to_dict())
-            label = ','.join(['{:.3f}'.format(v) if v is not np.nan else 'nan' for k,v in labels_dict.items()])
+            # labels_dict = {k:np.nan for k in list(gene_map_dict.values())}
+            # labels_dict.update(row2.to_dict())
+            # label = ','.join(['{:.3f}'.format(v) if v is not np.nan else 'nan' for k,v in labels_dict.items()])
             # with open(save_filename.replace('.jpg', '.txt'), 'w') as fp:
             #     fp.write(label)
+            label = ','.join(['{:.3f}'.format(v) for v in row2.values.tolist()])
             txt_buffer = io.StringIO(label)
             btxt_buffer = io.BytesIO(txt_buffer.read().encode())
             txt_filename = os.path.join(svs_prefix, f'x{x}_y{y}.txt')
