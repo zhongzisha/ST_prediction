@@ -11,6 +11,7 @@ import pickle
 import io
 import tarfile
 import time
+from urllib.parse import urlsplit
 from sklearn.metrics import r2_score
 import PIL
 PIL.Image.MAX_IMAGE_PIXELS = 12660162500
@@ -19,7 +20,8 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 import torch
 torch.set_printoptions(sci_mode=False)
-torch.multiprocessing.set_sharing_strategy('file_system')
+# torch.multiprocessing.set_sharing_strategy('file_system')
+torch.multiprocessing.set_sharing_strategy('file_descriptor')
 import torch.nn as nn
 import torchvision
 from torchvision import transforms
@@ -40,6 +42,7 @@ from transformers import CLIPModel, CLIPProcessor
 
 with open('ST_gene_list.pkl', 'rb') as fp:
     gene_map_dict = {v: str(i) for i, v in enumerate(pickle.load(fp)['gene_list'])}
+    gene_names = list(gene_map_dict.keys())
 BACKBONE_DICT = {
     'resnet50': 2048,
     'CLIP': 512,
@@ -47,7 +50,8 @@ BACKBONE_DICT = {
     'MobileNetV3': 1280,
     'mobilenetv3': 1280,
     'ProvGigaPath': 1536,
-    'CONCH': 512,
+    # 'CONCH': 512,
+    'CONCH': 768,
     'UNI': 1024
 }
 GLOBAL_MEAN = [0.75225115, 0.5662438 , 0.72874427]
@@ -205,12 +209,14 @@ class Trainer:
                 os.makedirs(save_dirs[subset], exist_ok=True)
             self.save_dirs = save_dirs
 
+            self.loss_dicts = {subset: [] for subset in self.dataloaders.keys()}
+
     def _load_snapshot(self, snapshot_path):
         loc = f"cuda:{self.gpu_id}"
         snapshot = torch.load(snapshot_path, map_location=loc)
         self.model.load_state_dict(snapshot["MODEL_STATE"])
         self.epochs_run = snapshot["EPOCHS_RUN"]
-        print(f"Resuming training from snapshot at Epoch {self.epochs_run}")
+        # print(f"Resuming training from snapshot at Epoch {self.epochs_run}")
 
     def _run_epoch(self, epoch, subset='train'):
 
@@ -223,13 +229,13 @@ class Trainer:
             self.model.eval()
 
         b_sz = len(next(iter(self.dataloaders[subset]))[0])
-        print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.dataloaders[subset])}")
+        # print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.dataloaders[subset])}")
         self.dataloaders[subset].sampler.set_epoch(epoch)
         dataset = self.dataloaders[subset].dataset
 
         labels = []
         preds = []
-        train_loss = 0
+        total_loss = torch.tensor([0.], dtype=torch.float32, device=self.gpu_id)
         for batch_idx, (images_batch, labels_batch) in enumerate(self.dataloaders[subset]):
             images_batch = images_batch.to(self.gpu_id)
             labels_batch = labels_batch.to(self.gpu_id)
@@ -239,28 +245,28 @@ class Trainer:
             else:
                 with torch.no_grad():
                     preds_batch = self.model(images_batch)
+            mask = torch.isnan(labels_batch)
+            loss = self.loss_fn(preds_batch[~mask], labels_batch[~mask])
 
             if is_train:
-                mask = torch.isnan(labels_batch)
-                total_loss = self.loss_fn(preds_batch[~mask], labels_batch[~mask])
-                total_loss = total_loss / self.accum_iter
-                total_loss.backward()
-
-                train_loss += total_loss.item()
+                loss = loss / self.accum_iter
+                loss.backward()
 
                 if (batch_idx + 1) % self.accum_iter == 0:
                     self.optimizer.step()
                     self.model.zero_grad()
                     self.optimizer.zero_grad()
-                
-                if self.gpu_id == 0 and (batch_idx + 1) % 10 == 0:
-                    print(total_loss.item())
             else:
                 labels.append(labels_batch)
                 preds.append(preds_batch)
 
+            total_loss[0] += loss
+
+        total_loss = collect_results_gpu(total_loss, 1, world_size=self.world_size)
+        total_loss = total_loss.sum()
         if is_train:
-            print('train loss: ', train_loss)
+            if self.gpu_id == 0:
+                self.loss_dicts[subset].append([epoch, total_loss.item()])
         else:
             labels = torch.cat(labels)
             preds = torch.cat(preds)
@@ -270,12 +276,30 @@ class Trainer:
             
             if self.gpu_id == 0:
                 scores = r2_score_pytorch(all_preds, all_labels, multioutput='raw_values')
-                scores = scores[~torch.isnan(scores)]
-                scores, inds = torch.sort(scores)
-                print('Bottom 10: ', scores[:10])
-                print('Top 10: ', scores[-10:])
-                print('Count(>0.2): ', len(torch.where(scores>0.2)[0]))
+                # scores = scores[~torch.isnan(scores)]
+                # scores, inds = torch.sort(scores, descending=True)
+                # items = {
+                #     '_epoch': epoch,
+                #     '_total_loss': total_loss.item(),
+                #     '_num': len(torch.where(scores>0.2)[0])
+                # }
+                # record_num = min(1000, len(scores))
+                # scores_dict = {f'{ind+1}': '{}({:.3f})'.format(gene_names[inds[ind]], scores[ind].item()) for ind in range(record_num)} # top 10
+                # scores_dict.update({f'-{len(scores)-ind}': '{}({:.3f})'.format(gene_names[inds[ind]], scores[ind].item()) for ind in range(len(scores) - record_num, len(scores))}) # bottom 10
+                # items.update(scores_dict)
+                items = [epoch, total_loss.item()] + [scores[~torch.isnan(scores)].max()] + scores.detach().cpu().numpy().tolist()
+                self.loss_dicts[subset].append(items)
 
+        if self.gpu_id == 0:
+            for subset, v in self.loss_dicts.items():
+                column_names = ['_epoch', '_total_loss']
+                if subset == 'val':
+                    column_names += ['maxR2'] + list(gene_map_dict.keys())
+                if len(v) > 0:
+                    log_df = pd.DataFrame(v, columns=column_names)
+                    log_df.to_csv(os.path.join(self.save_root, f'{subset}_e{epoch}_log.csv'), float_format='%.3f')
+                    if os.path.exists(os.path.join(self.save_root, f'{subset}_e{epoch-1}_log.csv')):
+                        os.system('rm -rf "{}"'.format(os.path.join(self.save_root, f'{subset}_e{epoch-1}_log.csv')))
         dist.barrier()
 
     def _save_snapshot(self, epoch):
@@ -296,7 +320,8 @@ class Trainer:
             if self.gpu_id == 0 and epoch % self.save_every == 0:
                 self._save_snapshot(epoch)
 
-
+        if self.gpu_id == 0:
+            self._save_snapshot(epoch)
 
 class STModel(nn.Module):
     def __init__(self, backbone='resnet50', dropout=0.25, num_outputs=24665):
@@ -308,9 +333,19 @@ class STModel(nn.Module):
             self.transform = None
             self.image_processor = None
         elif backbone == 'CONCH':
-            from conch.open_clip_custom import create_model_from_pretrained
-            self.backbone_model, self.image_processor = create_model_from_pretrained('conch_ViT-B-16','./backbones/CONCH_weights_pytorch_model.bin')
-            self.transform = None
+            # from conch.open_clip_custom import create_model_from_pretrained
+            # self.backbone_model, self.image_processor = create_model_from_pretrained('conch_ViT-B-16','./backbones/CONCH_weights_pytorch_model.bin')
+            # self.transform = None
+            from timm.models.vision_transformer import VisionTransformer
+            self.backbone_model = VisionTransformer(embed_dim=768, 
+                                                    depth=12, 
+                                                    num_heads=12, 
+                                                    mlp_ratio=4,
+                                                    img_size=448, 
+                                                    patch_size=16,
+                                                    num_classes=0,
+                                                    dynamic_img_size=True)
+            self.backbone_model.load_state_dict(torch.load('./backbones/CONCH_vision_weights_pytorch_model.bin', weights_only=True))
         elif backbone == 'UNI':
             self.backbone_model = timm.create_model(
                 "vit_large_patch16_224", img_size=224, patch_size=16, init_values=1e-5, num_classes=0, dynamic_img_size=True
@@ -363,11 +398,9 @@ class STModel(nn.Module):
 
     def forward(self, x):
         
-        if self.backbone in ['CONCH']:
-            h = self.backbone_model.encode_image(x, proj_contrast=False, normalize=False)
-        elif self.backbone in ['PLIP', 'CLIP']:
+        if self.backbone in ['PLIP', 'CLIP']:
             h = self.backbone_model.get_image_features(x)
-        elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath']:
+        elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath', 'CONCH']:
             h = self.backbone_model(x)
 
         h = self.rho(h)
@@ -403,7 +436,7 @@ class PatchDataset1(Dataset):
         return self.transform(patch), label
 
 
-def load_train_objs(val_ind=0, data_root='./data', lr=1e-4): 
+def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False): 
 
     human_slide_ids = [
         '10x_CytAssist_11mm_FFPE_Human_Colorectal_Cancer_2.0.1',
@@ -478,10 +511,11 @@ def load_train_objs(val_ind=0, data_root='./data', lr=1e-4):
     train_dataset = PatchDataset1(train_data, transform=train_transform, is_train=True)
     val_dataset = PatchDataset1(val_data, transform=val_transform, is_train=False)
 
-    model = STModel(backbone='resnet50')
+    model = STModel(backbone=backbone)
 
-    # for param in model.backbone_model.parameters():
-    #     param.requires_grad = False
+    if fixed_backbone:
+        for param in model.backbone_model.parameters():
+            param.requires_grad = False
 
     # lr = 5e-4
     weight_decay = 1e-5
@@ -497,21 +531,30 @@ def load_train_objs(val_ind=0, data_root='./data', lr=1e-4):
 
 
 def train_main():
-    val_ind = int(sys.argv[1])
+    num_gpus = int(sys.argv[1])
     data_root = sys.argv[2]
-    lr = float(sys.argv[3])
-    batch_size = int(sys.argv[4])
-    max_epochs = 200
+    backbone = sys.argv[3]
+    lr = float(sys.argv[4])
+    batch_size = int(sys.argv[5])
+    val_ind = int(sys.argv[6])
+    fixed_backbone = sys.argv[7] == 'True'
+    max_epochs = 100
+    save_every = 20
+    accum_iter = 1
+    save_root = f'./outputs/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
+
     ddp_setup()
-    train_dataset, val_dataset, model, optimizer = load_train_objs(val_ind=val_ind, data_root=data_root, lr=lr)
+    train_dataset, val_dataset, model, optimizer = load_train_objs(val_ind=val_ind, data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone)
 
     dataloaders = {
         'train':
-            DataLoader(train_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=False)),
+            DataLoader(train_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, 
+                sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=False)),
         'val':
-            DataLoader(val_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, sampler=DistributedSampler(val_dataset, shuffle=False, drop_last=False)),
+            DataLoader(val_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, 
+                sampler=DistributedSampler(val_dataset, shuffle=False, drop_last=False)),
     }
-    trainer = Trainer(model, dataloaders, optimizer, save_root='./outputs', save_every=100, accum_iter=1)
+    trainer = Trainer(model, dataloaders, optimizer, save_root=save_root, save_every=save_every, accum_iter=accum_iter)
     trainer.train(max_epochs=max_epochs)
     dist.destroy_process_group()
 
@@ -522,19 +565,21 @@ if __name__ == '__main__':
 
 """
 
+NUM_GPUS=4
 torchrun \
     --nnodes=1 \
-    --nproc_per_node=4 \
+    --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py 0 ./data 1e-4 64
+    ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data resnet50 5e-4 64 8 False
 
+NUM_GPUS=8
 torchrun \
     --nnodes=1 \
-    --nproc_per_node=8 \
+    --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py 1 /tmp/zhongz2/data 1e-4 32
+    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data resnet50 5e-4 32 1 True
 """
 
 def main():
