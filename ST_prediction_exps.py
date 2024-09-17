@@ -209,7 +209,7 @@ class Trainer:
                 os.makedirs(save_dirs[subset], exist_ok=True)
             self.save_dirs = save_dirs
 
-            self.loss_dicts = {subset: [] for subset in self.dataloaders.keys()}
+            self.loss_dicts = {subset: {'loss': [], 'r2score': [], 'spearmanr_corr': [], 'spearmanr_pvalue': []} for subset in self.dataloaders.keys()}
 
     def _load_snapshot(self, snapshot_path):
         loc = f"cuda:{self.gpu_id}"
@@ -266,7 +266,7 @@ class Trainer:
         total_loss = total_loss.sum()
         if is_train:
             if self.gpu_id == 0:
-                self.loss_dicts[subset].append([epoch, total_loss.item()])
+                self.loss_dicts[subset]['loss'].append([epoch, total_loss.item()])
         else:
             labels = torch.cat(labels)
             preds = torch.cat(preds)
@@ -278,23 +278,34 @@ class Trainer:
                 scores = r2_score_pytorch(all_preds, all_labels, multioutput='raw_values')
                 all_preds = all_preds.detach().cpu().numpy()
                 all_labels = all_labels.detach().cpu().numpy()
-                spearmanr_results = []
+                self.loss_dicts[subset]['loss'].append([epoch, total_loss.item()])
+                self.loss_dicts[subset]['r2score'].append(scores.detach().cpu().numpy().tolist())
+
+                spearmanr_corrs = []
+                spearmanr_pvals = []
+                print(all_preds)
+                print(all_labels)
                 for j in range(all_preds.shape[1]):
                     res = spearmanr(all_preds[:, j], all_labels[:, j])
-                    spearmanr_results.append('{:.3f}({:.3f})'.format(res.statistic, res.pvalue))
-                items = [epoch, total_loss.item()] + [scores[~torch.isnan(scores)].max().item()] + scores.detach().cpu().numpy().tolist() + spearmanr_results
-                self.loss_dicts[subset].append(items)
+                    spearmanr_corrs.append(res.statistic)
+                    spearmanr_pvals.append(res.pvalue)
+                self.loss_dicts[subset]['spearmanr_corr'].append(spearmanr_corrs)
+                self.loss_dicts[subset]['spearmanr_pvalue'].append(spearmanr_pvals)
 
         if self.gpu_id == 0:
             for subset, v in self.loss_dicts.items():
-                column_names = ['_epoch', '_total_loss']
-                if subset == 'val':
-                    column_names += ['maxR2'] + self.gene_names + [v+'_spearmanr' for v in self.gene_names]
-                if len(v) > 0:
-                    log_df = pd.DataFrame(v, columns=column_names)
-                    log_df.to_csv(os.path.join(self.save_root, f'{subset}_e{epoch}_log.csv'), float_format='%.3f')
-                    if os.path.exists(os.path.join(self.save_root, f'{subset}_e{epoch-1}_log.csv')):
-                        os.system('rm -rf "{}"'.format(os.path.join(self.save_root, f'{subset}_e{epoch-1}_log.csv')))
+                for name, vv in v.items():
+                    if len(vv) == 0:
+                        continue
+                    if name == 'loss':
+                        column_names = ['_epoch', '_total_loss']
+                    else:
+                        column_names = self.gene_names
+                
+                    log_df = pd.DataFrame(vv, columns=column_names)
+                    log_df.to_csv(os.path.join(self.save_root, f'{subset}_e{epoch}_{name}.csv'), float_format='%g' if 'pvalue' in name else '%.3f')
+                    if os.path.exists(os.path.join(self.save_root, f'{subset}_e{epoch-1}_{name}.csv')):
+                        os.system('rm -rf "{}"'.format(os.path.join(self.save_root, f'{subset}_e{epoch-1}_{name}.csv')))
         dist.barrier()
 
     def _save_snapshot(self, epoch):
@@ -408,80 +419,65 @@ class STModel(nn.Module):
 
 
 
-class PatchDataset1(Dataset):
-    def __init__(self, data, transform, is_train=False):
+
+
+class PatchDataset(Dataset):
+    def __init__(self, data, transform, is_train=False, data_root='./'):
         super().__init__()
         self.data = data
         self.transform = transform 
         self.is_train = is_train
+        self.data_root = data_root
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx): 
-        patch = Image.open(self.data[idx])
+        img_path, label = self.data[idx] 
+        patch = Image.open(os.path.join(self.data_root, 'images', img_path))
+        if self.is_train:
+            if np.random.rand() < 0.5:
+                patch = patch.rotate(np.random.choice([90, 180, 270]))
+            if np.random.rand() < 0.2:
+                patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
+        label = torch.tensor([float(v) for v in label])
+        return self.transform(patch), label
+
+
+
+class PatchDataset1(Dataset):
+    def __init__(self, data, transform, is_train=False, data_root='./'):
+        super().__init__()
+        self.data = data
+        self.transform = transform 
+        self.is_train = is_train
+        self.data_root = data_root
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx): 
+        img_path, txt_path = self.data[idx]
+        # print(self.data_root, img_path, txt_path)
+        patch = Image.open(os.path.join(self.data_root, img_path))
         if self.is_train:
             if np.random.rand() < 0.5:
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
             if np.random.rand() < 0.2:
                 patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
 
-        with open(self.data[idx].replace('.jpg', '.txt'), 'r') as fp:
+        with open(os.path.join(self.data_root, txt_path), 'r') as fp:
             label = torch.tensor([float(v) for v in fp.readline().split(',')])
         return self.transform(patch), label
 
 
-def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, gene_names=[]): 
+def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False): 
 
-    human_slide_ids = [
-        '10x_CytAssist_11mm_FFPE_Human_Colorectal_Cancer_2.0.1',
-        '10x_CytAssist_11mm_FFPE_Human_Glioblastoma_2.0.1',
-        '10x_CytAssist_11mm_FFPE_Human_Kidney_2.0.1',
-        '10x_CytAssist_11mm_FFPE_Human_Lung_Cancer_2.0.1',
-        '10x_CytAssist_11mm_FFPE_Human_Ovarian_Carcinoma_2.0.0',
-        '10x_CytAssist_FFPE_Human_Lung_Squamous_Cell_Carcinoma_2.0.0',
-        '10x_CytAssist_FFPE_Protein_Expression_Human_Tonsil_2.1.0',
-        '10x_CytAssist_Fresh_Frozen_Human_Breast_Cancer_2.0.1',
-        # '10x_Targeted_Visium_Human_BreastCancer_Immunology_1.2.0',
-        '10x_V1_Breast_Cancer_Block_A_Section_1_1.1.0',
-        '10x_V1_Breast_Cancer_Block_A_Section_2_1.1.0',
-        '10x_Visium_FFPE_Human_Cervical_Cancer_1.3.0',
-        '10x_Visium_FFPE_Human_Intestinal_Cancer_1.3.0',
-        '10x_Visium_FFPE_Human_Ovarian_Cancer_1.3.0',
-        '10x_Visium_FFPE_Human_Prostate_Acinar_Cell_Carcinoma_1.3.0',
-        '10x_Visium_Human_Breast_Cancer_1.3.0',
-        'ST1K4M_Human_Breast_10X_06092021_Visium',
-        'ST1K4M_Human_Colon_10X_10052023_Visium_control_rep1',
-        #'ST1K4M_Human_Colon_10X_10052023_Visium_control_rep2',
-        'ST1K4M_Human_Colon_10X_10052023_Visium_post_xenium_rep1',
-        #'ST1K4M_Human_Colon_10X_10052023_Visium_post_xenium_rep2',
-        'ST1K4M_Human_Prostate_10X_06092021_Visium_cancer',
-        'ST1K4M_Human_Prostate_10X_06092021_Visium_normal',
-        'ST1K4M_Human_Prostate_10X_07122022_Visium'
-    ]
-
-    invalid_prefixes = [
-        'selected_gene_names', 'mean_std', 'meta'
-    ]
-    val_prefixes = [
-        human_slide_ids[val_ind]
-    ]
-    train_data = []
-    val_data = []
-    # files = sorted(glob.glob(os.path.join(data_root, '*.pkl')))
-    files = sorted(os.listdir(data_root))
-    for d in files:
-        if not os.path.isdir(os.path.join(data_root, d)):
-            print(d, 'not dir')
-            continue
-        svs_prefix = d
-        if svs_prefix in invalid_prefixes:
-            continue
-        samples = glob.glob(os.path.join(data_root, d, '*.jpg'))
-        if svs_prefix in val_prefixes:
-            val_data.extend(samples) 
-        else:
-            train_data.extend(samples) 
+    with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
+        meta = pickle.load(fp)
+    gene_names = meta['selected_gene_names']
+    train_data = meta['data']['train']
+    val_data = meta['data']['val'] 
 
     # mean = [0.485, 0.456, 0.406]
     # std = [0.229, 0.224, 0.225]
@@ -503,9 +499,13 @@ def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4,
         transforms.Normalize(mean, std)
     ])
 
-    train_dataset = PatchDataset1(train_data, transform=train_transform, is_train=True)
-    val_dataset = PatchDataset1(val_data, transform=val_transform, is_train=False)
-
+    if False: #isinstance(train_data[0][0], str):
+        train_dataset = PatchDataset1(train_data, transform=train_transform, is_train=True, data_root=data_root)
+        val_dataset = PatchDataset1(val_data, transform=val_transform, is_train=False, data_root=data_root)
+    else:
+        train_dataset = PatchDataset(train_data, transform=train_transform, is_train=True, data_root=data_root)
+        val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, data_root=data_root)
+        
     model = STModel(backbone=backbone, num_outputs=len(gene_names))
 
     if fixed_backbone:
@@ -522,7 +522,7 @@ def load_train_objs(val_ind=0, data_root='./data', backbone='resnet50', lr=1e-4,
     #     {'params': other_params, 'lr': lr*10}
     # ], lr=lr, weight_decay=weight_decay)
 
-    return train_dataset, val_dataset, model, optimizer
+    return train_dataset, val_dataset, model, optimizer, gene_names
 
 
 def train_main():
@@ -531,27 +531,22 @@ def train_main():
     backbone = sys.argv[3]
     lr = float(sys.argv[4])
     batch_size = int(sys.argv[5])
-    val_ind = int(sys.argv[6])
-    fixed_backbone = sys.argv[7] == 'True'
+    fixed_backbone = sys.argv[6] == 'True'
     max_epochs = 100
     save_every = 20
     accum_iter = 1
-    save_root = f'./outputs/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
-
-    with open('final_common_gene_names.pkl', 'rb') as fp:
-        gene_names = pickle.load(fp)['final_common_gene_names']
+    save_root = f'./outputs/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
 
     ddp_setup()
-    train_dataset, val_dataset, model, optimizer = \
-        load_train_objs(val_ind=val_ind, data_root=data_root, backbone=backbone, \
-            lr=lr, fixed_backbone=fixed_backbone, gene_names=gene_names)
+    train_dataset, val_dataset, model, optimizer, gene_names = \
+        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone)
 
     dataloaders = {
         'train':
-            DataLoader(train_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, 
+            DataLoader(train_dataset, num_workers=8, batch_size=batch_size, pin_memory=True, shuffle=False, 
                 sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=False)),
         'val':
-            DataLoader(val_dataset, num_workers=4, batch_size=batch_size, pin_memory=True, shuffle=False, 
+            DataLoader(val_dataset, num_workers=8, batch_size=batch_size, pin_memory=True, shuffle=False, 
                 sampler=DistributedSampler(val_dataset, shuffle=False, drop_last=False)),
     }
     trainer = Trainer(model, dataloaders, optimizer, save_root=save_root, save_every=save_every, accum_iter=accum_iter, gene_names=gene_names)
@@ -571,7 +566,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data_v4_1.3 resnet50 5e-4 64 8 False
+    ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data_IFNG_1.3_True resnet50 5e-4 64 False
 
 NUM_GPUS=8
 torchrun \
@@ -579,7 +574,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data resnet50 5e-4 32 1 True
+    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data resnet50 5e-4 32 True
 """
 
 def main():

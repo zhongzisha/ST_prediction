@@ -7,8 +7,9 @@ current_dir=`pwd`
 if [ "$CLUSTER_NAME" == "FRCE" ]; then
     source $FRCE_DATA_ROOT/anaconda3/bin/activate th23
     module load cuda/11.8
-    module load cudnn/8.8.3-cuda11 
-    DATA_ROOT=/tmp/zhongz2/data
+    module load cudnn/8.8.3-cuda11
+    if [ -d /tmp/zhongz2/data ]; then rm -rf /tmp/zhongz2/data; fi
+    DATA_ROOT=/tmp/zhongz2/$SLURM_JOB_ID/data
     if [ ! -d ${DATA_ROOT} ]; then
         echo "prepare data"
         mkdir -p $DATA_ROOT
@@ -62,7 +63,7 @@ torchrun \
 exit;
 
 sbatch --ntasks=1 --ntask-per-node=1 --partition=gpu --gres=gpu:v100x:1,lscratch:10 --cpus-per-task=32 --time=108:00:00 --mem=100G \
-ST_prediction_exps.sh 4 resnet50 5e-4 64 0 
+ST_prediction_exps.sh 4 resnet50 5e-4 64 0
 
 for VAL_INDEX in {0..23}; do 
 echo $VAL_INDEX;
