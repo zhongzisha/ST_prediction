@@ -73,7 +73,16 @@ done
 
 
 
-
+current_dir=`pwd`
+for d in `find . -maxdepth 1 -type d -name "10x_*"`;do
+echo "======"
+cd $d;
+for f in `ls *spatial*.tar.gz`; do
+echo $f; 
+tar -xf $f;
+done
+cd $current_dir;
+done
 
 
 
