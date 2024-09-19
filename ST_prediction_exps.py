@@ -303,9 +303,7 @@ class Trainer:
                         column_names = self.gene_names
                 
                     log_df = pd.DataFrame(vv, columns=column_names)
-                    log_df.to_csv(os.path.join(self.save_root, f'{subset}_e{epoch}_{name}.csv'), float_format='%g' if 'pvalue' in name else '%.3f')
-                    if os.path.exists(os.path.join(self.save_root, f'{subset}_e{epoch-1}_{name}.csv')):
-                        os.system('rm -rf "{}"'.format(os.path.join(self.save_root, f'{subset}_e{epoch-1}_{name}.csv')))
+                    log_df.to_csv(os.path.join(self.save_root, f'{subset}_{name}.csv'), float_format='%.9f' if 'pvalue' in name else '%.3f')
         dist.barrier()
 
     def _save_snapshot(self, epoch):
@@ -377,17 +375,17 @@ class STModel(nn.Module):
         else:
             raise ValueError('error')
 
-        self.rho = nn.Sequential(*[
-            nn.Linear(BACKBONE_DICT[backbone], 512), 
-            nn.ReLU(), 
-            nn.Dropout(dropout)
-        ])
+        # self.rho = nn.Sequential(*[
+        #     nn.Linear(BACKBONE_DICT[backbone], 512), 
+        #     nn.ReLU(), 
+        #     nn.Dropout(dropout)
+        # ])
 
-        self.fc = nn.Linear(512, num_outputs)
-        # self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
+        # self.fc = nn.Linear(512, num_outputs)
+        self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
 
         # self.initialize_weights()
-        self.rho.apply(self._init_weights)
+        # self.rho.apply(self._init_weights)
         self.fc.apply(self._init_weights)
 
     def initialize_weights(self):
@@ -409,11 +407,11 @@ class STModel(nn.Module):
         elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath', 'CONCH']:
             h = self.backbone_model(x)
 
-        h = self.rho(h)
+        # h = self.rho(h)
 
         h = self.fc(h)
 
-        h = 8 * torch.tanh(h)  # [-8, 8]
+        # h = 8 * torch.tanh(h)  # [-8, 8]
 
         return h
 
@@ -438,9 +436,9 @@ class PatchDataset(Dataset):
         if self.is_train:
             if np.random.rand() < 0.5:
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
-            if np.random.rand() < 0.2:
-                patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
-        label = torch.tensor([float(v) for v in label])
+            # if np.random.rand() < 0.2:
+            #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
+        label = torch.tensor([float(v)/8. for v in label])
         return self.transform(patch), label
 
 
@@ -463,11 +461,11 @@ class PatchDataset1(Dataset):
         if self.is_train:
             if np.random.rand() < 0.5:
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
-            if np.random.rand() < 0.2:
-                patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
+            # if np.random.rand() < 0.2:
+            #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
 
         with open(os.path.join(self.data_root, txt_path), 'r') as fp:
-            label = torch.tensor([float(v) for v in fp.readline().split(',')])
+            label = torch.tensor([float(v)/8 for v in fp.readline().split(',')])
         return self.transform(patch), label
 
 
@@ -479,10 +477,10 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
     train_data = meta['data']['train']
     val_data = meta['data']['val'] 
 
-    # mean = [0.485, 0.456, 0.406]
-    # std = [0.229, 0.224, 0.225]
-    mean = GLOBAL_MEAN
-    std = GLOBAL_STD
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    # mean = GLOBAL_MEAN
+    # std = GLOBAL_STD
     train_transform = transforms.Compose([
         transforms.Resize((224, 224)), 
         transforms.RandomHorizontalFlip(),
@@ -568,13 +566,21 @@ torchrun \
     --rdzv_endpoint=localhost:29898 \
     ST_prediction_exps.py ${NUM_GPUS} /lscratch/$SLURM_JOB_ID/data_IFNG_1.3_True resnet50 5e-4 64 False
 
-NUM_GPUS=8
+NUM_GPUS=2
 torchrun \
     --nnodes=1 \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data resnet50 5e-4 32 True
+    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data_genes_1.3_True resnet50 1e-4 64 True
+
+NUM_GPUS=2
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=${NUM_GPUS} \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=localhost:29898 \
+    ST_prediction_exps.py ${NUM_GPUS} /tmp/zhongz2/data_genes_1.3_False__He2020_v1 resnet50 1e-4 128 True
 """
 
 def main():
