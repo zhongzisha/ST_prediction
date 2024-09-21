@@ -375,17 +375,17 @@ class STModel(nn.Module):
         else:
             raise ValueError('error')
 
-        # self.rho = nn.Sequential(*[
-        #     nn.Linear(BACKBONE_DICT[backbone], 512), 
-        #     nn.ReLU(), 
-        #     nn.Dropout(dropout)
-        # ])
+        self.rho = nn.Sequential(*[
+            nn.Linear(BACKBONE_DICT[backbone], 512), 
+            nn.ReLU(), 
+            nn.Dropout(dropout)
+        ])
 
-        # self.fc = nn.Linear(512, num_outputs)
-        self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
+        self.fc = nn.Linear(512, num_outputs)
+        # self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
 
         # self.initialize_weights()
-        # self.rho.apply(self._init_weights)
+        self.rho.apply(self._init_weights)
         self.fc.apply(self._init_weights)
 
     def initialize_weights(self):
@@ -407,11 +407,11 @@ class STModel(nn.Module):
         elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath', 'CONCH']:
             h = self.backbone_model(x)
 
-        # h = self.rho(h)
+        h = self.rho(h)
 
         h = self.fc(h)
 
-        # h = 8 * torch.tanh(h)  # [-8, 8]
+        h = 8 * torch.tanh(h)  # [-8, 8]
 
         return h
 
@@ -438,7 +438,7 @@ class PatchDataset(Dataset):
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
             # if np.random.rand() < 0.2:
             #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
-        label = torch.tensor([float(v)/8. for v in label])
+        label = torch.tensor([float(v) for v in label])
         return self.transform(patch), label
 
 
@@ -465,7 +465,7 @@ class PatchDataset1(Dataset):
             #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
 
         with open(os.path.join(self.data_root, txt_path), 'r') as fp:
-            label = torch.tensor([float(v)/8 for v in fp.readline().split(',')])
+            label = torch.tensor([float(v) for v in fp.readline().split(',')])
         return self.transform(patch), label
 
 
