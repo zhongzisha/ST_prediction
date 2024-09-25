@@ -15,10 +15,11 @@ ensembl_df = pd.read_csv('ensembl.tsv', sep='\t', index_col=0, low_memory=False)
 ensembl_df = ensembl_df[~ensembl_df['Ensembl ID(supplied by Ensembl)'].isna()]
 ensembl_df = ensembl_df.drop_duplicates('Ensembl ID(supplied by Ensembl)')
 gene_symbol_dict = {row['Ensembl ID(supplied by Ensembl)']: row['Approved symbol'] for _, row in ensembl_df.iterrows()}
-
+all_gene_names = [v.upper() for v in list(gene_symbol_dict.values())]
 
 root = '/Users/zhongz2/down/He2020/'
 root = '/scratch/cluster_scratch/zhongz2/debug/data/He2020'
+root = '/data/zhongz2/temp29/ST_prediction/data/He2020'
 df = pd.read_csv(f'{root}/metadata.csv')
 low_thres, high_thres = -4, 4
 patch_size = 224
@@ -31,13 +32,19 @@ selected_gene_names = sorted([
 version = '20240920_all'
 selected_gene_names = []
 if len(selected_gene_names) == 0:
-    selected_gene_names = sorted(list(gene_symbol_dict.values()))
+    selected_gene_names = sorted(all_gene_names)
+
+version = '20240925_secreted'
+selected_gene_names = []
+protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
+selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
 
 use_gene_tar = True
 
 alldata = {patient: {} for patient in patients}
 save_root = f'{root}/cache_data/data_{patch_size}_{version}'
 os.makedirs(save_root, exist_ok=True)
+
 for _, row in df.iterrows():
 
     svs_prefix = row['histology_image'].replace('.jpg', '')
@@ -122,6 +129,7 @@ for _, row in df.iterrows():
 
 with open(os.path.join(save_root, 'run.sh'), 'w') as fp:
     fp.write('#!/bin/bash\nfor f in `ls *.tar.gz`;do tar -xf $f; done')
+
 with open(os.path.join(save_root, 'meta.pkl'), 'wb') as fp:
     pickle.dump({
         'alldata': alldata,
@@ -129,38 +137,6 @@ with open(os.path.join(save_root, 'meta.pkl'), 'wb') as fp:
         'gene_thres': (low_thres, high_thres)
     }, fp)
 
-
-
-# check the data
-with open(os.path.join(root, 'alldata_FASN.pkl'), 'rb') as fp:
-    alldata = pickle.load(fp)
-
-val_ind = 0
-train_data = []
-val_data = []
-mean, std = [], []
-for ind, (patient, data) in enumerate(alldata.items()):
-    if ind == val_ind:
-        for item in data.values():
-            val_data.extend(item['data'])
-    else:
-        for item in data.values():
-            train_data.extend(item['data'])
-            mean.append(item['mean'])
-            std.append(item['std'])
-mean = np.stack(mean, axis=0).mean(axis=0).tolist()
-std = np.stack(std, axis=0).mean(axis=0).tolist()
-
-trnY = [item[1] for item in train_data]
-valY = [item[1] for item in val_data]
-trn_df = pd.DataFrame(trnY, columns=['FASN']).clip(lower=low_thres, upper=high_thres, axis=1)
-val_df = pd.DataFrame(valY, columns=['FASN']).clip(lower=low_thres, upper=high_thres, axis=1)
-plt.close()
-bins = np.arange(low_thres, high_thres, 1)
-trn_df['FASN'].hist(bins=bins)
-val_df['FASN'].hist(bins=bins)
-plt.savefig('FASN.jpg')
-plt.close()
 
 
 

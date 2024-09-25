@@ -575,7 +575,130 @@ torchrun \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
     ST_prediction_exps_v2.py ${NUM_GPUS} /scratch/cluster_scratch/zhongz2/debug/data/He2020/cache_data/data_224_20240920_all/data_images_He2020_224_20240920_all resnet50 1e-6 64 True 0
+
+NUM_GPUS=2
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=${NUM_GPUS} \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=localhost:29898 \
+    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240925_secreted resnet50 1e-6 64 True 0
+
+NUM_GPUS=2
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=${NUM_GPUS} \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=localhost:29898 \
+    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240925_secreted resnet50 1e-6 64 False 0
+
 """
+
+def plot_curves():
+
+    import glob,os,io,tarfile,time,pickle
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240925_secreted/results/val_0/gpus2'
+    data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240925_secreted'
+
+    root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_all/data_images_He2020_224_20240920_all/results/val_0/gpus2'
+    data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_all/data_images_He2020_224_20240920_all/'
+
+    root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1/results/val_0/gpus2'
+    data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1'
+
+    # check the data, plot hist
+    with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
+        tmp = pickle.load(fp)
+        alldata = tmp['alldata']
+        gene_names = tmp['gene_names'] if 'gene_names' in tmp else tmp['selected_gene_names']
+        low_thres, high_thres = tmp['gene_thres']
+    bins = np.arange(low_thres, high_thres, 1)
+
+    val_ind = 0
+    train_data = []
+    val_data = []
+    mean, std = [], []
+    for ind, (patient, data) in enumerate(alldata.items()):
+        if ind == val_ind:
+            for item in data.values():
+                val_data.extend(item['data'])
+        else:
+            for item in data.values():
+                train_data.extend(item['data'])
+                mean.append(item['mean'])
+                std.append(item['std'])
+    mean = np.stack(mean, axis=0).mean(axis=0).tolist()
+    std = np.stack(std, axis=0).mean(axis=0).tolist()
+
+    trnY, valY = [], []
+    for item in train_data:
+        with open(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'ST_prediction_data2', item[1]), 'r') as fp:
+            trnY.append([float(v) for v in fp.readline().split(',')])
+    for item in val_data:
+        with open(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'ST_prediction_data2', item[1]), 'r') as fp:
+            valY.append([float(v) for v in fp.readline().split(',')])
+    trnY = [item[1] for item in train_data]
+    valY = [item[1] for item in val_data]
+    trn_df = pd.DataFrame(np.array(trnY), columns=gene_names)
+    val_df = pd.DataFrame(np.array(valY), columns=gene_names)
+    # plt.close()
+    # trn_df['FASN'].hist(bins=bins)
+    # val_df['FASN'].hist(bins=bins)
+    # plt.savefig('FASN.jpg')
+    # plt.close()
+
+    files = glob.glob(f'{root}/**/**/*_99.pt')
+
+    fh = io.BytesIO()
+    tar_fp = tarfile.open(fileobj=fh, mode='w:gz')
+    
+    for f in files:
+        d = os.path.dirname(f)
+
+        r2 = pd.read_csv(os.path.join(d, 'val_r2score.csv'), index_col=0)
+        pearson = pd.read_csv(os.path.join(d, 'val_pearsonr_corr.csv'), index_col=0)
+        spearman = pd.read_csv(os.path.join(d, 'val_spearmanr_corr.csv'), index_col=0)
+
+        s = r2.sum(axis=0)
+        # s = r2.max(axis=0)
+        sorted_names = s.sort_values(ascending=False).index
+        r2 = r2[sorted_names]
+        pearson = pearson[sorted_names]
+        spearman = spearman[sorted_names]
+
+        for j,gene_name in enumerate(sorted_names[:min(50, r2.shape[1])]):
+            fig, axes = plt.subplots(nrows=1, ncols=2)
+            ax = axes[0]
+            r2[gene_name].plot(ax=ax)
+            spearman[gene_name].plot(ax=ax)
+            pearson[gene_name].plot(ax=ax)
+            ax.legend(['r2', 'spearman', 'pearson'])
+            ax.set_title('{}, rank = {}'.format(gene_name, j+1))
+            # plt.savefig(os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+
+            ax = axes[1]
+            trn_df[gene_name].hist(bins=bins, ax=ax)
+            val_df[gene_name].hist(bins=bins, ax=ax)
+
+            im_buffer = io.BytesIO()
+            plt.savefig(im_buffer, format='JPEG')
+            info = tarfile.TarInfo(name=os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+            info.size = im_buffer.getbuffer().nbytes
+            info.mtime = time.time()
+            im_buffer.seek(0)
+            tar_fp.addfile(info, im_buffer)
+
+            plt.close()
+
+    tar_fp.close()
+    with open(os.path.join(root, 'val_figures_sum.tar.gz'), 'wb') as fp:
+        fp.write(fh.getvalue())
+
+
 
 def main():
 
