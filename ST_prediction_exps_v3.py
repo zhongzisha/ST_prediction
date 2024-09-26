@@ -170,6 +170,9 @@ def collect_results_gpu(part_tensor, size, world_size):
     return torch.cat(part_recv_list, axis=0)[:size]
 
 
+def weighted_mse_loss(input, target, weight):
+    return (weight * (input - target) ** 2)
+
 class Trainer:
     def __init__(
             self,
@@ -196,7 +199,7 @@ class Trainer:
 
         self.model = DDP(self.model, device_ids=[self.gpu_id])
 
-        self.loss_fn = nn.MSELoss()
+        # self.loss_fn = nn.MSELoss()
         # self.loss_fn = nn.L1Loss()
         # self.loss_fn = nn.HuberLoss()
 
@@ -234,9 +237,10 @@ class Trainer:
         labels = []
         preds = []
         total_loss = torch.tensor([0.], dtype=torch.float32, device=self.gpu_id)
-        for batch_idx, (images_batch, labels_batch) in enumerate(self.dataloaders[subset]):
+        for batch_idx, (images_batch, labels_batch, weights_batch) in enumerate(self.dataloaders[subset]):
             images_batch = images_batch.to(self.gpu_id)
             labels_batch = labels_batch.to(self.gpu_id)
+            weights_batch = weights_batch.to(self.gpu_id)
 
             if is_train:
                 preds_batch = self.model(images_batch)
@@ -244,7 +248,8 @@ class Trainer:
                 with torch.no_grad():
                     preds_batch = self.model(images_batch)
             mask = torch.isnan(labels_batch)
-            loss = self.loss_fn(preds_batch[~mask], labels_batch[~mask])
+            # loss = self.loss_fn(preds_batch[~mask], labels_batch[~mask])
+            loss = weighted_mse_loss(preds_batch[~mask], labels_batch[~mask], weights_batch[~mask]).mean()
 
             if is_train:
                 loss = loss / self.accum_iter
@@ -427,12 +432,16 @@ class STModel(nn.Module):
 
 
 class PatchDataset(Dataset):
-    def __init__(self, data, transform, is_train=False, cache_root='./'):
+    def __init__(self, data, transform, is_train=False, cache_root='./', weights=None):
         super().__init__()
         self.data = data
         self.transform = transform 
         self.is_train = is_train
         self.cache_root = cache_root
+        if weights is not None:
+            self.weights = torch.tensor(weights)
+        else:
+            self.weights = None
 
     def __len__(self):
         return len(self.data)
@@ -447,16 +456,35 @@ class PatchDataset(Dataset):
             #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
         with open(os.path.join(self.cache_root, txt_path), 'r') as fp:
             label = torch.tensor([float(v) for v in fp.readline().split(',')])
-        return self.transform(patch), label
+        if self.weights is not None:
+            label1 = label.clone()
+            label1[label1<=0] = 0
+            label1[label1>0] = 1
+            label1 = label1.int()
+            weight = self.weights[label1, np.arange(self.weights.shape[1])]
+        else:
+            weight = torch.ones_like(label)
+        return self.transform(patch), label, weight
 
 
-def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, val_ind=0, cache_root='./'): 
+def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, val_ind=0, cache_root='./', use_weights=False): 
+
+    if use_weights and os.path.exists(os.path.join(data_root, '..', '..', 'metainfo.pkl')):
+        with open(os.path.join(data_root, '..', '..', 'metainfo.pkl'), 'rb') as fp:
+            tmp = pickle.load(fp)
+            frequencies_df_sum = tmp['frequencies_df_sum'] 
+            weights = frequencies_df_sum.sum(axis=0)/ frequencies_df_sum
+            weights = weights.values.astype(np.float32)
+            del tmp, frequencies_df_sum
+    else:
+        weights = None
 
     with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
         tmp = pickle.load(fp)
         alldata = tmp['alldata']
         gene_names = tmp['gene_names']
         low_thres, high_thres = tmp['gene_thres']
+        del tmp
 
     train_data = []
     val_data = []
@@ -494,8 +522,8 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
     ])
 
 
-    train_dataset = PatchDataset(train_data, transform=train_transform, is_train=True, cache_root=cache_root)
-    val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, cache_root=cache_root)
+    train_dataset = PatchDataset(train_data, transform=train_transform, is_train=True, cache_root=cache_root, weights=weights)
+    val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, cache_root=cache_root, weights=weights)
     
     model = STModel(backbone=backbone, num_outputs=len(gene_names))
 
@@ -523,11 +551,12 @@ def train_main():
     lr = float(sys.argv[4])
     batch_size = int(sys.argv[5])
     fixed_backbone = sys.argv[6] == 'True'
-    val_ind = int(sys.argv[7])
+    use_weights = sys.argv[7] == 'True'
+    val_ind = int(sys.argv[8])
     max_epochs = 100
     save_every = 200
     accum_iter = 1
-    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
+    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_w{use_weights}'
     os.makedirs(save_root, exist_ok=True)
 
     # local directories
@@ -539,7 +568,7 @@ def train_main():
 
     ddp_setup()
     train_dataset, val_dataset, model, optimizer, gene_names = \
-        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root)
+        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root, use_weights=False)
 
     dataloaders = {
         'train':
@@ -566,31 +595,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} /tmp/zhongz2/data_images_He2020_224 resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} /scratch/cluster_scratch/zhongz2/debug/data/He2020/cache_data/data_224_20240920_all/data_images_He2020_224_20240920_all resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240925_secreted resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240926_secreted resnet50 5e-6 64 True 0
+    ST_prediction_exps_v3.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240926_secreted resnet50 5e-6 64 True True 0
 
 """
 
