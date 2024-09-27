@@ -41,13 +41,15 @@ def create_data_v2():
     protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
     selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
 
-    version = '20240926_secreted'
+    version = '20240926'
     selected_gene_names = []
     protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
     # selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
     with open(os.path.join(root, 'metainfo.pkl'), 'rb') as fp:
         tmp = pickle.load(fp)
         frequencies_df_sum = tmp['frequencies_df_sum']
+        bins = tmp['bins']
+        bin_labels = tmp['bin_labels']
         del tmp
     selected_gene_names = sorted(frequencies_df_sum.columns)
 
@@ -77,6 +79,7 @@ def create_data_v2():
         vst_df = vst_df.clip(lower=low_thres, upper=high_thres, axis=1)
         existed_gene_names = sorted(list(set(selected_gene_names).intersection(set(vst_df.columns.values))))
         vst_df = vst_df[existed_gene_names]
+        vst_df_cut = vst_df.apply(lambda col: pd.cut(col, bins=bins, labels=False,include_lowest=True))
         slide = openslide.open_slide(svs_filename)
 
         fh = io.BytesIO()
@@ -84,7 +87,7 @@ def create_data_v2():
         items = []
         mean = np.zeros((3, ), dtype=np.float32)
         std = np.zeros((3, ), dtype=np.float32)
-        for (_, row1), (_, row2) in zip(coord_df.iterrows(), vst_df.iterrows()):
+        for (_, row1), (_, row2), (_, row3) in zip(coord_df.iterrows(), vst_df.iterrows(), vst_df_cut.iterrows()):
             xc, yc = row1['X'], row1['Y']
             patch = slide.read_region((int(xc - patch_size//2), int(yc - patch_size//2)), 0, (patch_size, patch_size)).convert('RGB')
             label = row2.values.tolist()
@@ -109,6 +112,18 @@ def create_data_v2():
                 txt_buffer = io.StringIO(label)
                 btxt_buffer = io.BytesIO(txt_buffer.read().encode())
                 txt_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}.txt')
+                info = tarfile.TarInfo(name=txt_filename)
+                info.size = btxt_buffer.getbuffer().nbytes
+                info.mtime = time.time()
+                btxt_buffer.seek(0)
+                tar_fp.addfile(info, btxt_buffer)
+
+                labels_dict = {k:0 for k in selected_gene_names}
+                labels_dict.update(row3.to_dict())
+                label = ','.join(['{:d}'.format(v) if v is not np.nan else 'nan' for k,v in labels_dict.items()])
+                txt_buffer = io.StringIO(label)
+                btxt_buffer = io.BytesIO(txt_buffer.read().encode())
+                txt_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}_cls.txt')
                 info = tarfile.TarInfo(name=txt_filename)
                 info.size = btxt_buffer.getbuffer().nbytes
                 info.mtime = time.time()
@@ -146,7 +161,9 @@ def create_data_v2():
         pickle.dump({
             'alldata': alldata,
             'gene_names': selected_gene_names,
-            'gene_thres': (low_thres, high_thres)
+            'gene_thres': (low_thres, high_thres),
+            'bins': bins,
+            'bin_labels': bin_labels
         }, fp)
 
 
@@ -162,47 +179,16 @@ def get_selected_gene_names():
     root = '/scratch/cluster_scratch/zhongz2/debug/data/He2020'
     root = '/data/zhongz2/temp29/ST_prediction/data/He2020'
     df = pd.read_csv(f'{root}/metadata.csv')
-    low_thres, high_thres = -4, 4
     patch_size = 224
     patients = df['patient'].unique()
 
-
-    version = '20240920_v1'
-    selected_gene_names = sorted([
-        'GNAS', 'ACTG1', 'FASN', 'DDX5', 'XBP1'
-    ])
-
-    version = '20240920_all'
-    selected_gene_names = []
-    if len(selected_gene_names) == 0:
-        selected_gene_names = sorted(all_gene_names)
-
-    version = '20240925_secreted'
-    selected_gene_names = []
-    protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
-    selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
-
-    version = '20240926_secreted'
-    selected_gene_names = []
-    protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
-    selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
-
-
-    alldata = {patient: {} for patient in patients}
-    save_root = f'{root}/cache_data/data_{patch_size}_{version}'
-    os.makedirs(save_root, exist_ok=True)
-
-    bins = [-np.inf, 0, np.inf]
     sum_df = pd.DataFrame(np.zeros((1, len(all_gene_names)), dtype=np.float32), columns=all_gene_names)
     count_df = pd.DataFrame(np.zeros((1, len(all_gene_names)), dtype=np.int32), columns=all_gene_names)
-    # frequencies_df = sum_df.apply(lambda col: pd.cut(col, bins=bins, labels=False, include_lowest=True).value_counts().sort_index())
 
     for _, row in df.iterrows():
 
         svs_prefix = row['histology_image'].replace('.jpg', '')
-        save_filename = os.path.join(save_root, svs_prefix+'.tar.gz')
         patient = row['patient']
-        alldata[patient][svs_prefix] = {}
         vst_filename = f'{root}/{svs_prefix}_gene_vst.tsv'
         svs_filename = f'{root}/{svs_prefix}.jpg'
         coord_filename = '{}/{}'.format(root, row['spot_coordinates'])
@@ -214,15 +200,12 @@ def get_selected_gene_names():
         coord_df = coord_df.loc[common_spots]
         vst_df = vst_df.loc[common_spots]
         vst_df = vst_df.rename(columns=gene_symbol_dict)
-        vst_df = vst_df.clip(lower=low_thres, upper=high_thres, axis=1)
         existed_gene_names = list(set(all_gene_names).intersection(set(vst_df.columns.values)))
         vst_df = vst_df[existed_gene_names]
-        # slide = openslide.open_slide(svs_filename)
 
         sum_df = sum_df + vst_df.sum(axis=0)
         count_df = count_df + vst_df.notna().sum(axis=0)
 
-        # frequencies_df = vst_df.apply(lambda col: pd.cut(col, bins=bins, include_lowest=True).value_counts().sort_index())
         print(svs_prefix)
 
     sum_df1 = sum_df.copy()
@@ -236,7 +219,8 @@ def get_selected_gene_names():
 
     selected_gene_names = sorted(mean_df.columns)
 
-    bins = [-np.inf, 0, np.inf]
+    bins = [-np.inf, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, np.inf]
+    bin_labels = np.array([-2.0, -1.0, 0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     sum_df = pd.DataFrame(np.zeros((1, len(selected_gene_names)), dtype=np.float32), columns=selected_gene_names)
     count_df = pd.DataFrame(np.zeros((1, len(selected_gene_names)), dtype=np.int32), columns=selected_gene_names)
     frequencies_dfs = []
@@ -244,9 +228,7 @@ def get_selected_gene_names():
     for rowind, row in df.iterrows():
 
         svs_prefix = row['histology_image'].replace('.jpg', '')
-        save_filename = os.path.join(save_root, svs_prefix+'.tar.gz')
         patient = row['patient']
-        alldata[patient][svs_prefix] = {}
         vst_filename = f'{root}/{svs_prefix}_gene_vst.tsv'
         svs_filename = f'{root}/{svs_prefix}.jpg'
         coord_filename = '{}/{}'.format(root, row['spot_coordinates'])
@@ -258,7 +240,6 @@ def get_selected_gene_names():
         coord_df = coord_df.loc[common_spots]
         vst_df = vst_df.loc[common_spots]
         vst_df = vst_df.rename(columns=gene_symbol_dict)
-        vst_df = vst_df.clip(lower=low_thres, upper=high_thres, axis=1)
         existed_gene_names = sorted(list(set(selected_gene_names).intersection(set(vst_df.columns.values))))
         vst_df = vst_df[existed_gene_names]
 
@@ -282,7 +263,8 @@ def get_selected_gene_names():
             'sum_df': sum_df,
             'count_df': count_df,
             'frequencies_df_sum': frequencies_df_sum,
-            'bins': bins
+            'bins': bins,
+            'bin_labels': bin_labels
         }, fp)
 
 

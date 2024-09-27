@@ -8,6 +8,7 @@ import seaborn as sns
 import pyarrow.parquet as pq
 import openslide
 import pickle
+import random
 import io
 import tarfile
 import time
@@ -523,7 +524,7 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
 
 
     train_dataset = PatchDataset(train_data, transform=train_transform, is_train=True, cache_root=cache_root, weights=weights)
-    val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, cache_root=cache_root, weights=weights)
+    val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, cache_root=cache_root, weights=None)
     
     model = STModel(backbone=backbone, num_outputs=len(gene_names))
 
@@ -568,7 +569,7 @@ def train_main():
 
     ddp_setup()
     train_dataset, val_dataset, model, optimizer, gene_names = \
-        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root, use_weights=False)
+        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root, use_weights=use_weights)
 
     dataloaders = {
         'train':
@@ -584,6 +585,7 @@ def train_main():
 
 
 if __name__ == '__main__':
+    setup_seed(2024)
     train_main() 
 
 
@@ -614,6 +616,9 @@ def plot_curves():
 
     # root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1/results/val_0/gpus2'
     # data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1'
+
+    root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240926_secreted/results/val_0/gpus2'
+    data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240926_secreted'
 
     # check the data, plot hist
     with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
