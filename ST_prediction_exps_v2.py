@@ -446,7 +446,7 @@ class PatchDataset(Dataset):
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
             # if np.random.rand() < 0.2:
             #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
-        with open(os.path.join(self.cache_root, txt_path), 'r') as fp:
+        with open(os.path.join(self.cache_root, txt_path.replace('_cls', '')), 'r') as fp:
             label = torch.tensor([float(v) for v in fp.readline().split(',')])
         return self.transform(patch), label
 
@@ -474,7 +474,7 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
     mean = np.stack(mean, axis=0).mean(axis=0).tolist()
     std = np.stack(std, axis=0).mean(axis=0).tolist()
 
-    if False:  # use imagenet mean and std
+    if True:  # use imagenet mean and std
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
@@ -528,7 +528,7 @@ def train_main():
     max_epochs = 100
     save_every = 200
     accum_iter = 1
-    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}'
+    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0'
     os.makedirs(save_root, exist_ok=True)
 
     # local directories
@@ -568,31 +568,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} /tmp/zhongz2/data_images_He2020_224 resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} /scratch/cluster_scratch/zhongz2/debug/data/He2020/cache_data/data_224_20240920_all/data_images_He2020_224_20240920_all resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240925_secreted resnet50 1e-6 64 True 0
-
-NUM_GPUS=2
-torchrun \
-    --nnodes=1 \
-    --nproc_per_node=${NUM_GPUS} \
-    --rdzv_backend=c10d \
-    --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240926_secreted resnet50 5e-6 64 True 0
+    ST_prediction_exps_v2.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v1 resnet50 5e-5 64 True 0
 
 """
 

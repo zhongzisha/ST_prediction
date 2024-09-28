@@ -13,7 +13,7 @@ import io
 import tarfile
 import time
 from urllib.parse import urlsplit
-from sklearn.metrics import r2_score, confusion_matrix, roc_auc_score
+from sklearn.metrics import r2_score
 from scipy.stats import spearmanr, pearsonr
 import PIL
 PIL.Image.MAX_IMAGE_PIXELS = 12660162500
@@ -25,7 +25,6 @@ torch.set_printoptions(sci_mode=False)
 # torch.multiprocessing.set_sharing_strategy('file_system')
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
@@ -35,7 +34,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.distributed as dist
 from torcheval.metrics.functional import r2_score as r2_score_pytorch
-from torcheval.metrics.functional import auc as auc_pytorch
 import timm
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
@@ -173,23 +171,6 @@ def collect_results_gpu(part_tensor, size, world_size):
     return torch.cat(part_recv_list, axis=0)[:size]
 
 
-def weighted_mse_loss(input, target, weight):
-    return (weight * (input - target) ** 2)
-
-def calculate_topk_accuracy(y_pred, y, k = 5):
-    with torch.no_grad():
-        batch_size, num = y.shape[:2]
-        acc_1s, acc_ks = [], []
-        for j in range(num):
-            _, top_pred = y_pred[:, j, :].topk(k, 1)
-            top_pred = top_pred.t()
-            correct = top_pred.eq(y[:, j].view(1, -1).expand_as(top_pred))
-            correct_1 = correct[:1].reshape(-1).float().sum(0, keepdim = True)
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim = True)
-            acc_1s.append(correct_1.item() / batch_size)
-            acc_ks.append(correct_k.item() / batch_size)
-    return acc_1s, acc_ks
-
 class Trainer:
     def __init__(
             self,
@@ -213,23 +194,10 @@ class Trainer:
         self.save_every = save_every
         self.save_root = save_root
         self.gene_names = gene_names
-        self.num_classes = model.num_classes
-        self.num_genes = model.num_genes
-        self.bin_labels = np.array([-2.0, -1.0, 0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-        self.class_weights = torch.tensor([
-            100.0,
-            5.902011951294695,
-            1.4845647080816549,
-            13.242422708556559,
-            22.401221928314527,
-            50.51746899723922,
-            61.26961281548879
-        ], dtype=torch.float32).to(self.gpu_id)
 
         self.model = DDP(self.model, device_ids=[self.gpu_id])
 
-        self.loss_fn = nn.CrossEntropyLoss(weight=self.class_weights)
-        # self.loss_fn = nn.CrossEntropyLoss()
+        self.loss_fn = nn.MSELoss()
         # self.loss_fn = nn.L1Loss()
         # self.loss_fn = nn.HuberLoss()
 
@@ -240,7 +208,7 @@ class Trainer:
                 os.makedirs(save_dirs[subset], exist_ok=True)
             self.save_dirs = save_dirs
 
-            self.loss_dicts = {subset: {'acc_1': [], 'acc_5': [], 'auc': [], 'loss': [], 'r2score': [], 'spearmanr_corr': [], 'spearmanr_pvalue': [], 'pearsonr_corr': [], 'pearsonr_pvalue': []} for subset in self.dataloaders.keys()}
+            self.loss_dicts = {subset: {'loss': [], 'r2score': [], 'spearmanr_corr': [], 'spearmanr_pvalue': [], 'pearsonr_corr': [], 'pearsonr_pvalue': []} for subset in self.dataloaders.keys()}
 
     def _load_snapshot(self, snapshot_path):
         loc = f"cuda:{self.gpu_id}"
@@ -266,22 +234,18 @@ class Trainer:
 
         labels = []
         preds = []
-        reg_labels = []
         total_loss = torch.tensor([0.], dtype=torch.float32, device=self.gpu_id)
-        for batch_idx, (images_batch, labels_batch, labels_batch_reg) in enumerate(self.dataloaders[subset]):
+        for batch_idx, (images_batch, labels_batch) in enumerate(self.dataloaders[subset]):
             images_batch = images_batch.to(self.gpu_id)
             labels_batch = labels_batch.to(self.gpu_id)
-            labels_batch_reg = labels_batch_reg.to(self.gpu_id)
 
             if is_train:
                 preds_batch = self.model(images_batch)
             else:
                 with torch.no_grad():
                     preds_batch = self.model(images_batch)
-
-            preds_batch = preds_batch.reshape(-1, self.num_classes)
-            labels_batch = labels_batch.reshape(-1)
-            loss = self.loss_fn(preds_batch, labels_batch)
+            mask = torch.isnan(labels_batch)
+            loss = self.loss_fn(preds_batch[~mask], labels_batch[~mask])
 
             if is_train:
                 loss = loss / self.accum_iter
@@ -294,7 +258,6 @@ class Trainer:
             else:
                 labels.append(labels_batch)
                 preds.append(preds_batch)
-                reg_labels.append(labels_batch_reg)
 
             total_loss[0] += loss
 
@@ -306,85 +269,34 @@ class Trainer:
         else:
             labels = torch.cat(labels)
             preds = torch.cat(preds)
-            reg_labels = torch.cat(reg_labels)
 
-
-            all_labels = collect_results_gpu(labels, self.num_genes*len(dataset), world_size=self.world_size)
-            all_logits = collect_results_gpu(preds, self.num_genes*len(dataset), world_size=self.world_size)
-            all_reg_labels = collect_results_gpu(reg_labels, len(dataset), world_size=self.world_size)
+            all_labels = collect_results_gpu(labels, len(dataset), world_size=self.world_size)
+            all_preds = collect_results_gpu(preds, len(dataset), world_size=self.world_size)
             
             if self.gpu_id == 0:
-
+                scores = r2_score_pytorch(all_preds, all_labels, multioutput='raw_values')
+                all_preds = all_preds.detach().cpu().numpy()
+                all_labels = all_labels.detach().cpu().numpy()
                 self.loss_dicts[subset]['loss'].append([epoch, total_loss.item()])
-                if False:
+                self.loss_dicts[subset]['r2score'].append(scores.detach().cpu().numpy().tolist())
 
-                    scores = r2_score_pytorch(all_logits, all_labels, multioutput='raw_values')
-                    all_logits = all_logits.detach().cpu().numpy()
-                    all_labels = all_labels.detach().cpu().numpy()
-                    self.loss_dicts[subset]['r2score'].append(scores.detach().cpu().numpy().tolist())
+                spearmanr_corrs = []
+                spearmanr_pvals = [] 
+                pearsonr_corrs = []
+                pearsonr_pvals = []
+                for j in range(all_preds.shape[1]):
+                    res = spearmanr(all_preds[:, j], all_labels[:, j])
+                    spearmanr_corrs.append(res.statistic)
+                    spearmanr_pvals.append(res.pvalue)
 
-                    spearmanr_corrs = []
-                    spearmanr_pvals = [] 
-                    pearsonr_corrs = []
-                    pearsonr_pvals = []
-                    for j in range(all_logits.shape[1]):
-                        res = spearmanr(all_logits[:, j], all_labels[:, j])
-                        spearmanr_corrs.append(res.statistic)
-                        spearmanr_pvals.append(res.pvalue)
+                    res = pearsonr(all_preds[:, j], all_labels[:, j])
+                    pearsonr_corrs.append(res.statistic)
+                    pearsonr_pvals.append(res.pvalue)
 
-                        res = pearsonr(all_logits[:, j], all_labels[:, j])
-                        pearsonr_corrs.append(res.statistic)
-                        pearsonr_pvals.append(res.pvalue)
-
-                    self.loss_dicts[subset]['spearmanr_corr'].append(spearmanr_corrs)
-                    self.loss_dicts[subset]['spearmanr_pvalue'].append(spearmanr_pvals)
-                    self.loss_dicts[subset]['pearsonr_corr'].append(pearsonr_corrs)
-                    self.loss_dicts[subset]['pearsonr_pvalue'].append(pearsonr_pvals)
-                else:
-                    all_logits = all_logits.reshape(-1, self.num_genes, self.num_classes)
-                    all_labels = all_labels.reshape(-1, self.num_genes) # B, G
-                    # acc_1, acc_5 = calculate_topk_accuracy(all_logits, all_labels)
-                    all_probs = F.softmax(all_logits, dim=-1)  # B, G, C
-                    all_preds = all_probs.argmax(-1).detach().cpu().numpy()  # B, G
-                    # self.loss_dicts[subset]['acc_1'].append(acc_1)
-                    # self.loss_dicts[subset]['acc_5'].append(acc_5)
-                    all_labels = all_labels.detach().cpu().numpy()
-                    all_probs = all_probs.detach().cpu().numpy()
-                    cmat = confusion_matrix(y_true=all_labels.reshape(-1), y_pred=all_preds.reshape(-1))
-                    print(cmat)
-                    # aucs = np.zeros((self.num_genes,),dtype=np.float32)
-                    # for j in range(self.num_genes):
-                    #     auc = roc_auc_score(y_true=all_labels[:, j], y_score=all_probs[:, j, :], average='weighted', multi_class='ovo',
-                    #                         labels=np.arange(len(self.bin_labels)))
-                    #     aucs[j] = auc
-                    # self.loss_dicts[subset]['auc'].append(aucs)
-                    all_reg_preds = torch.from_numpy(self.bin_labels[all_preds]).to(self.gpu_id)
-
-                    print('all_reg_preds', all_reg_preds)
-                    print('all_reg_labels', all_reg_labels)
-                    
-                    scores = r2_score_pytorch(all_reg_preds, all_reg_labels, multioutput='raw_values')
-                    all_reg_preds = all_reg_preds.detach().cpu().numpy()
-                    all_reg_labels = all_reg_labels.detach().cpu().numpy()
-                    self.loss_dicts[subset]['r2score'].append(scores.detach().cpu().numpy().tolist())
-
-                    spearmanr_corrs = []
-                    spearmanr_pvals = [] 
-                    pearsonr_corrs = []
-                    pearsonr_pvals = []
-                    for j in range(all_reg_preds.shape[1]):
-                        res = spearmanr(all_reg_preds[:, j], all_reg_labels[:, j])
-                        spearmanr_corrs.append(res.statistic)
-                        spearmanr_pvals.append(res.pvalue)
-
-                        res = pearsonr(all_reg_preds[:, j], all_reg_labels[:, j])
-                        pearsonr_corrs.append(res.statistic)
-                        pearsonr_pvals.append(res.pvalue)
-
-                    self.loss_dicts[subset]['spearmanr_corr'].append(spearmanr_corrs)
-                    self.loss_dicts[subset]['spearmanr_pvalue'].append(spearmanr_pvals)
-                    self.loss_dicts[subset]['pearsonr_corr'].append(pearsonr_corrs)
-                    self.loss_dicts[subset]['pearsonr_pvalue'].append(pearsonr_pvals)
+                self.loss_dicts[subset]['spearmanr_corr'].append(spearmanr_corrs)
+                self.loss_dicts[subset]['spearmanr_pvalue'].append(spearmanr_pvals)
+                self.loss_dicts[subset]['pearsonr_corr'].append(pearsonr_corrs)
+                self.loss_dicts[subset]['pearsonr_pvalue'].append(pearsonr_pvals)
 
         if self.gpu_id == 0:
             for subset, v in self.loss_dicts.items():
@@ -424,12 +336,9 @@ class Trainer:
             self._save_snapshot(epoch)
 
 class STModel(nn.Module):
-    def __init__(self, backbone='resnet50', dropout=0.25, num_genes=10000, num_classes=7):
+    def __init__(self, backbone='resnet50', dropout=0.25, num_outputs=24665):
         super().__init__()
         self.backbone = backbone
-        self.num_genes = num_genes
-        self.num_classes = num_classes
-
         if backbone == 'resnet50':
             self.backbone_model = torchvision.models.resnet50(pretrained=True)
             self.backbone_model.fc = nn.Identity()
@@ -480,8 +389,8 @@ class STModel(nn.Module):
             nn.Dropout(dropout)
         ])
 
-        self.fc = nn.Linear(512, num_genes*num_classes)
-        # self.fc = nn.Linear(BACKBONE_DICT[backbone], num_genes)
+        self.fc = nn.Linear(512, num_outputs)
+        # self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
 
         # self.initialize_weights()
         self.rho.apply(self._init_weights)
@@ -510,7 +419,7 @@ class STModel(nn.Module):
 
         h = self.fc(h)
 
-        h = h.reshape(-1, self.num_genes, self.num_classes)
+        # h = 8 * torch.tanh(h)  # [-8, 8]
 
         return h
 
@@ -519,29 +428,32 @@ class STModel(nn.Module):
 
 
 class PatchDataset(Dataset):
-    def __init__(self, data, transform, is_train=False, cache_root='./'):
+    def __init__(self, svs_prefixes, inds, coord_df, vst_df, transform, is_train=False, cache_root='./'):
         super().__init__()
-        self.data = data
+        self.svs_prefixes = svs_prefixes
+        self.inds = inds
+        self.coord_df = coord_df
+        self.vst_df = vst_df
+
         self.transform = transform 
         self.is_train = is_train
         self.cache_root = cache_root
 
     def __len__(self):
-        return len(self.data)
+        return len(self.inds)
 
     def __getitem__(self, idx): 
-        img_path, txt_path = self.data[idx]
-        patch = Image.open(os.path.join(self.cache_root, img_path))
+        svs_prefix = self.svs_prefixes[self.inds[idx]]
+        x, y = self.coord_df.iloc[idx]
+        vst = self.vst_df.iloc[idx]
+        patch = Image.open(os.path.join(self.cache_root, svs_prefix, f'x{x}_y{y}.jpg'))
         if self.is_train:
             if np.random.rand() < 0.5:
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
             # if np.random.rand() < 0.2:
             #     patch = patch.filter(ImageFilter.GaussianBlur(radius=np.random.randint(low=1,high=50)/100.)) 
-        with open(os.path.join(self.cache_root, txt_path), 'r') as fp:
-            cls_label = torch.tensor([int(float(v)) for v in fp.readline().split(',')])
-        with open(os.path.join(self.cache_root, txt_path.replace('_cls', '')), 'r') as fp:
-            reg_label = torch.tensor([float(v) for v in fp.readline().split(',')])
-        return self.transform(patch), cls_label, reg_label
+        label = torch.tensor(vst.values)
+        return self.transform(patch), label
 
 
 def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, val_ind=0, cache_root='./'): 
@@ -551,25 +463,40 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
         alldata = tmp['alldata']
         gene_names = tmp['gene_names']
         low_thres, high_thres = tmp['gene_thres']
-        bins = tmp['bins']
-        del tmp
 
-    train_data = []
-    val_data = []
+    all_svs_prefixes = []
+    all_inds = {'train': [], 'val': []}
+    all_coord_df = {'train': [], 'val': []}
+    all_vst_df = {'train': [], 'val': []}
+    
     mean, std = [], []
+    svs_prefix_id = 0
     for ind, (patient, data) in enumerate(alldata.items()):
         if ind == val_ind:
-            for item in data.values():
-                val_data.extend(item['data'])
+            for svs_prefix, item in data.items():
+                all_svs_prefixes.append(svs_prefix)
+                all_inds['val'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
+                all_coord_df['val'].append(item['coord_df'])
+                all_vst_df['val'].append(item['vst_df'])
+                svs_prefix_id += 1
         else:
-            for item in data.values():
-                train_data.extend(item['data'])
+            for svs_prefix, item in data.items():
+                all_svs_prefixes.append(svs_prefix)
+                all_inds['train'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
+                all_coord_df['train'].append(item['coord_df'])
+                all_vst_df['train'].append(item['vst_df'])
                 mean.append(item['mean'])
                 std.append(item['std'])
+                svs_prefix_id += 1
     mean = np.stack(mean, axis=0).mean(axis=0).tolist()
     std = np.stack(std, axis=0).mean(axis=0).tolist()
 
-    if False:  # use imagenet mean and std
+    for subset in ['train', 'val']:
+        all_inds[subset] = np.concatenate(all_inds[subset], axis=0)
+        all_coord_df[subset] = pd.concat(all_coord_df[subset], axis=0).astype(np.int32)
+        all_vst_df[subset] = pd.concat(all_vst_df[subset], axis=0).astype(np.float32)
+
+    if True:  # use imagenet mean and std
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
@@ -590,10 +517,10 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
     ])
 
 
-    train_dataset = PatchDataset(train_data, transform=train_transform, is_train=True, cache_root=cache_root)
-    val_dataset = PatchDataset(val_data, transform=val_transform, is_train=False, cache_root=cache_root)
+    train_dataset = PatchDataset(all_svs_prefixes, all_inds['train'], all_coord_df['train'], all_vst_df['train'], transform=train_transform, is_train=True, cache_root=cache_root)
+    val_dataset = PatchDataset(all_svs_prefixes, all_inds['val'], all_coord_df['val'], all_vst_df['val'], transform=val_transform, is_train=False, cache_root=cache_root)
     
-    model = STModel(backbone=backbone, num_genes=len(gene_names), num_classes=len(bins)-1)
+    model = STModel(backbone=backbone, num_outputs=len(gene_names))
 
     if fixed_backbone:
         for param in model.backbone_model.parameters():
@@ -623,7 +550,7 @@ def train_main():
     max_epochs = 100
     save_every = 200
     accum_iter = 1
-    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v1'
+    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0'
     os.makedirs(save_root, exist_ok=True)
 
     # local directories
@@ -663,7 +590,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v4.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240926 resnet50 5e-6 64 True 0
+    ST_prediction_exps_v5.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v2 resnet50 5e-5 64 True 0
 
 NUM_GPUS=2
 torchrun \
@@ -671,7 +598,7 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v4.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v1 resnet50 5e-5 64 True 0
+    ST_prediction_exps_v5.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v3 resnet50 5e-5 64 True 0
 
 """
 
@@ -691,8 +618,8 @@ def plot_curves():
     # root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1/results/val_0/gpus2'
     # data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240920_v1'
 
-    root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240926_secreted/results/val_0/gpus2'
-    data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240926_secreted'
+    root = './data/He2020/cache_data/data_224_20240927_v2/results/val_0/gpus2/'
+    data_root = './data/He2020/cache_data/data_224_20240927_v2/'
 
     # check the data, plot hist
     with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
@@ -703,35 +630,41 @@ def plot_curves():
     bins = np.arange(low_thres, high_thres, 1)
 
     val_ind = 0
-    train_data = []
-    val_data = []
+
+    all_svs_prefixes = []
+    all_inds = {'train': [], 'val': []}
+    all_coord_df = {'train': [], 'val': []}
+    all_vst_df = {'train': [], 'val': []}
+    
     mean, std = [], []
+    svs_prefix_id = 0
     for ind, (patient, data) in enumerate(alldata.items()):
         if ind == val_ind:
-            for item in data.values():
-                val_data.extend(item['data'])
+            for svs_prefix, item in data.items():
+                all_svs_prefixes.append(svs_prefix)
+                all_inds['val'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
+                all_coord_df['val'].append(item['coord_df'])
+                all_vst_df['val'].append(item['vst_df'])
+                svs_prefix_id += 1
         else:
-            for item in data.values():
-                train_data.extend(item['data'])
+            for svs_prefix, item in data.items():
+                all_svs_prefixes.append(svs_prefix)
+                all_inds['train'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
+                all_coord_df['train'].append(item['coord_df'])
+                all_vst_df['train'].append(item['vst_df'])
                 mean.append(item['mean'])
                 std.append(item['std'])
+                svs_prefix_id += 1
     mean = np.stack(mean, axis=0).mean(axis=0).tolist()
     std = np.stack(std, axis=0).mean(axis=0).tolist()
 
-    trnY, valY = [], []
-    for item in train_data:
-        with open(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'ST_prediction_data', item[1]), 'r') as fp:
-            trnY.append([float(v) for v in fp.readline().split(',')])
-    for item in val_data:
-        with open(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'ST_prediction_data', item[1]), 'r') as fp:
-            valY.append([float(v) for v in fp.readline().split(',')])
-    # trnY = [item[1] for item in train_data]
-    # valY = [item[1] for item in val_data]
-    trn_df = pd.DataFrame(np.array(trnY), columns=gene_names)
-    val_df = pd.DataFrame(np.array(valY), columns=gene_names)
+    for subset in ['train', 'val']:
+        all_inds[subset] = np.concatenate(all_inds[subset], axis=0)
+        all_coord_df[subset] = pd.concat(all_coord_df[subset], axis=0).astype(np.int32)
+        all_vst_df[subset] = pd.concat(all_vst_df[subset], axis=0).astype(np.float32)
 
-    trn_sum = trn_df.sum(axis=0)
-    trn_mean = trn_df.mean(axis=0)
+    trn_sum = all_vst_df['train'].sum(axis=0)
+    trn_mean = all_vst_df['train'].mean(axis=0)
 
     files = glob.glob(f'{root}/**/**/*_99.pt')
     fh = io.BytesIO()
@@ -762,8 +695,8 @@ def plot_curves():
             # plt.savefig(os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
 
             ax = axes[1]
-            trn_df[gene_name].hist(bins=bins, ax=ax)
-            val_df[gene_name].hist(bins=bins, ax=ax)
+            all_vst_df['train'][gene_name].hist(bins=bins, ax=ax)
+            all_vst_df['val'][gene_name].hist(bins=bins, ax=ax)
 
             im_buffer = io.BytesIO()
             plt.savefig(im_buffer, format='JPEG')

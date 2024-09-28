@@ -23,7 +23,7 @@ def create_data_v2():
     root = '/scratch/cluster_scratch/zhongz2/debug/data/He2020'
     root = '/data/zhongz2/temp29/ST_prediction/data/He2020'
     df = pd.read_csv(f'{root}/metadata.csv')
-    low_thres, high_thres = -5, 5
+    low_thres, high_thres = -2, 6
     patch_size = 224
     patients = df['patient'].unique()
     version = '20240920_v1'
@@ -56,7 +56,7 @@ def create_data_v2():
         'GNAS', 'ACTG1', 'FASN', 'DDX5', 'XBP1', 'C3'
     ])
 
-    version = '20240927_v1'
+    version = '20240927_v3'
     selected_gene_names = []
     protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
     # selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
@@ -100,65 +100,27 @@ def create_data_v2():
         vst_df = vst_df.rename(columns=gene_symbol_dict)
         vst_df = vst_df.clip(lower=low_thres, upper=high_thres, axis=1)
         existed_gene_names = sorted(list(set(selected_gene_names).intersection(set(vst_df.columns.values))))
-        vst_df = vst_df[existed_gene_names]
-        vst_df_cut = vst_df.apply(lambda col: pd.cut(col, bins=bins, labels=False,include_lowest=True))
+        vst_df = vst_df[existed_gene_names].astype(np.float32)
+        # vst_df_cut = vst_df.apply(lambda col: pd.cut(col, bins=bins, labels=False,include_lowest=True))
         slide = openslide.open_slide(svs_filename)
 
         fh = io.BytesIO()
         tar_fp = tarfile.open(fileobj=fh, mode='w:gz')
-        items = []
+
         mean = np.zeros((3, ), dtype=np.float32)
         std = np.zeros((3, ), dtype=np.float32)
-        for (_, row1), (_, row2), (_, row3) in zip(coord_df.iterrows(), vst_df.iterrows(), vst_df_cut.iterrows()):
+        for _, row1 in coord_df.iterrows():
             xc, yc = row1['X'], row1['Y']
             patch = slide.read_region((int(xc - patch_size//2), int(yc - patch_size//2)), 0, (patch_size, patch_size)).convert('RGB')
-            label = row2.values.tolist()
 
-            patch_filename = None
-            if use_gene_tar:
-                patch_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}.jpg')
-                im_buffer = io.BytesIO()
-                patch.save(im_buffer, format='JPEG')
-                info = tarfile.TarInfo(name=patch_filename)
-                info.size = im_buffer.getbuffer().nbytes
-                info.mtime = time.time()
-                im_buffer.seek(0)
-                tar_fp.addfile(info, im_buffer)
-
-
-            labels_dict = {k:np.nan for k in selected_gene_names}
-            labels_dict.update(row2.to_dict())
-
-            if use_gene_tar:
-                label = ','.join(['{:.3f}'.format(v) if v is not np.nan else 'nan' for k,v in labels_dict.items()])
-                txt_buffer = io.StringIO(label)
-                btxt_buffer = io.BytesIO(txt_buffer.read().encode())
-                txt_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}.txt')
-                info = tarfile.TarInfo(name=txt_filename)
-                info.size = btxt_buffer.getbuffer().nbytes
-                info.mtime = time.time()
-                btxt_buffer.seek(0)
-                tar_fp.addfile(info, btxt_buffer)
-
-                labels_dict = {k:0 for k in selected_gene_names}
-                labels_dict.update(row3.to_dict())
-                label = ','.join(['{:d}'.format(v) if v is not np.nan else 'nan' for k,v in labels_dict.items()])
-                txt_buffer = io.StringIO(label)
-                btxt_buffer = io.BytesIO(txt_buffer.read().encode())
-                txt_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}_cls.txt')
-                info = tarfile.TarInfo(name=txt_filename)
-                info.size = btxt_buffer.getbuffer().nbytes
-                info.mtime = time.time()
-                btxt_buffer.seek(0)
-                tar_fp.addfile(info, btxt_buffer)
-
-            if use_gene_tar:
-                items.append((patch_filename, txt_filename))
-            else:
-                if patch_filename is None:
-                    items.append((patch, label))
-                else:
-                    items.append((patch_filename, label))
+            patch_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}.jpg')
+            im_buffer = io.BytesIO()
+            patch.save(im_buffer, format='JPEG')
+            info = tarfile.TarInfo(name=patch_filename)
+            info.size = im_buffer.getbuffer().nbytes
+            info.mtime = time.time()
+            im_buffer.seek(0)
+            tar_fp.addfile(info, im_buffer)
 
             patch = np.array(patch, dtype=np.float32) / 255
             mean += patch.mean((0, 1))
@@ -172,7 +134,8 @@ def create_data_v2():
 
         print(svs_prefix)
 
-        alldata[patient][svs_prefix]['data'] = items
+        alldata[patient][svs_prefix]['coord_df'] = coord_df
+        alldata[patient][svs_prefix]['vst_df'] = vst_df
         alldata[patient][svs_prefix]['mean'] = mean
         alldata[patient][svs_prefix]['std'] = std
 
