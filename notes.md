@@ -20,4 +20,16 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 加油吧！以后多看文档，如果选择考这个的话，不付出努力是不可能拿下的。没有那么天才。
 
 
+2024-10-02
+
+今天主要是看题目。
+然后准备ppt和ST prediction实验。
+
+
+
+
+
+
+
+
 
