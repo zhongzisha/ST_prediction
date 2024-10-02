@@ -309,8 +309,8 @@ class Trainer:
                         column_names = self.gene_names
                 
                     log_df = pd.DataFrame(vv, columns=column_names)
-                    if subset == 'val' and 'r2' in name:
-                        print(log_df.values[-1, :])
+                    # if subset == 'val' and 'r2' in name:
+                    #     print(log_df.values[-1, :])
                     log_df.to_csv(os.path.join(self.save_root, f'{subset}_{name}.csv'), float_format='%.9f' if 'pvalue' in name else '%.3f')
         dist.barrier()
 
@@ -456,7 +456,18 @@ class PatchDataset(Dataset):
         return self.transform(patch), label
 
 
-def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, val_ind=0, cache_root='./'): 
+def neighbor_smoothing_vst(vst_df):
+    spot_names = vst_df.index.values
+    new_vst_df = vst_df.copy()
+    for s in spot_names:
+        r, c = [int(v) for v in s.split('x')]
+        ns = ['{}x{}'.format(rr, cc) for rr in [r-1, r, r+1] for cc in [c-1, c, c+1]]
+        ns = [v for v in ns if v in spot_names]
+        new_vst_df.loc[s] = vst_df.loc[ns].mean()
+    return new_vst_df
+
+
+def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_backbone=False, val_ind=0, cache_root='./', use_vst_smooth=False): 
 
     with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:
         tmp = pickle.load(fp)
@@ -477,14 +488,20 @@ def load_train_objs(data_root='./data', backbone='resnet50', lr=1e-4, fixed_back
                 all_svs_prefixes.append(svs_prefix)
                 all_inds['val'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
                 all_coord_df['val'].append(item['coord_df'])
-                all_vst_df['val'].append(item['vst_df'])
+                if use_vst_smooth:
+                    all_vst_df['val'].append(neighbor_smoothing_vst(item['vst_df']))
+                else:
+                    all_vst_df['val'].append(item['vst_df'])
                 svs_prefix_id += 1
         else:
             for svs_prefix, item in data.items():
                 all_svs_prefixes.append(svs_prefix)
                 all_inds['train'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
                 all_coord_df['train'].append(item['coord_df'])
-                all_vst_df['train'].append(item['vst_df'])
+                if use_vst_smooth:
+                    all_vst_df['train'].append(neighbor_smoothing_vst(item['vst_df']))
+                else:
+                    all_vst_df['train'].append(item['vst_df'])
                 mean.append(item['mean'])
                 std.append(item['std'])
                 svs_prefix_id += 1
@@ -546,12 +563,18 @@ def train_main():
     lr = float(sys.argv[4])
     batch_size = int(sys.argv[5])
     fixed_backbone = sys.argv[6] == 'True'
-    val_ind = int(sys.argv[7])
+    use_vst_smooth = sys.argv[7] == 'True'
+    val_ind = int(sys.argv[8])
+
     max_epochs = 100
     save_every = 200
     accum_iter = 1
-    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0'
+    save_root = f'{data_root}/results/val_{val_ind}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0_smooth{use_vst_smooth}'
     os.makedirs(save_root, exist_ok=True)
+
+    if os.path.exists(os.path.join(save_root, 'snapshot_99.pt')):
+        print('done')
+        sys.exit(-1)
 
     # local directories
     if os.environ['CLUSTER_NAME'] == 'Biowulf':
@@ -561,8 +584,10 @@ def train_main():
     os.makedirs(cache_root, exist_ok=True)
 
     ddp_setup()
+
     train_dataset, val_dataset, model, optimizer, gene_names = \
-        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root)
+        load_train_objs(data_root=data_root, backbone=backbone, lr=lr, fixed_backbone=fixed_backbone, val_ind=val_ind, cache_root=cache_root, 
+        use_vst_smooth=use_vst_smooth)
 
     dataloaders = {
         'train':
@@ -581,7 +606,6 @@ if __name__ == '__main__':
     setup_seed(2024)
     train_main() 
 
-
 """
 
 NUM_GPUS=2
@@ -598,7 +622,15 @@ torchrun \
     --nproc_per_node=${NUM_GPUS} \
     --rdzv_backend=c10d \
     --rdzv_endpoint=localhost:29898 \
-    ST_prediction_exps_v5.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v3 resnet50 5e-5 64 True 0
+    ST_prediction_exps_v5.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v3 resnet50 5e-5 64 True True 0
+
+NUM_GPUS=2
+torchrun \
+    --nnodes=1 \
+    --nproc_per_node=${NUM_GPUS} \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=localhost:29898 \
+    ST_prediction_exps_v5.py ${NUM_GPUS} ./data/He2020/cache_data/data_224_20240927_v3 resnet50 5e-5 64 False True 0
 
 """
 
@@ -620,6 +652,12 @@ def plot_curves():
 
     root = './data/He2020/cache_data/data_224_20240927_v2/results/val_0/gpus2/'
     data_root = './data/He2020/cache_data/data_224_20240927_v2/'
+
+    root = '/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20240927_v3/results/val_0/gpus2'
+    data_root = '/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20240927_v3/'
+
+    root = './data/He2020/cache_data/data_224_20241002/results/val_0/gpus2/'
+    data_root = './data/He2020/cache_data/data_224_20241002/'
 
     # check the data, plot hist
     with open(os.path.join(data_root, 'meta.pkl'), 'rb') as fp:

@@ -8,8 +8,20 @@ import openslide
 # import idr_torch
 import PIL
 PIL.Image.MAX_IMAGE_PIXELS = 12660162500
-from PIL import Image, ImageFile, ImageDraw, ImageFilter
+from PIL import Image, ImageFile, ImageDraw, ImageFilter, ImageFont
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+def neighbor_smoothing_vst(vst_df):
+    spot_names = vst_df.index.values
+    new_vst_df = vst_df.copy()
+    for s in spot_names:
+        r, c = [int(v) for v in s.split('x')]
+        ns = ['{}x{}'.format(rr, cc) for rr in [r-1, r, r+1] for cc in [c-1, c, c+1]]
+        ns = [v for v in ns if v in spot_names]
+        new_vst_df.loc[s] = vst_df.loc[ns].mean()
+    return new_vst_df
+
 
 def create_data_v2():
 
@@ -75,7 +87,28 @@ def create_data_v2():
     mean_df = sum_df / count_df
     selected_gene_names = sorted(list(set(protein_df.index.values).intersection(mean_df.columns.values)))
 
+    version = '20241002'
+    selected_gene_names = []
+    protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
+    # selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
+    with open(os.path.join(root, 'metainfo.pkl'), 'rb') as fp:
+        tmp = pickle.load(fp)
+        sum_df = tmp['sum_df']
+        count_df = tmp['count_df']
+        frequencies_df_sum = tmp['frequencies_df_sum']
+        bins = tmp['bins'] if 'bins' in tmp else [-np.inf, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, np.inf]
+        bin_labels = tmp['bin_labels'] if 'bin_labels' in tmp else np.array([-2.0, -1.0, 0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        del tmp
+    selected_gene_names = sorted(frequencies_df_sum.columns)
+    count_df = count_df.dropna(axis=1)
+    count_df = count_df[count_df>0]
+    sum_df = sum_df[count_df.columns]
+    mean_df = sum_df / count_df
+    selected_gene_names = sorted(list(set(protein_df.index.values).intersection(mean_df.columns.values)))
+
+
     use_gene_tar = True
+    font = ImageFont.load_default(32)
 
     alldata = {patient: {} for patient in patients}
     save_root = f'{root}/cache_data/data_{patch_size}_{version}'
@@ -103,6 +136,31 @@ def create_data_v2():
         vst_df = vst_df[existed_gene_names].astype(np.float32)
         # vst_df_cut = vst_df.apply(lambda col: pd.cut(col, bins=bins, labels=False,include_lowest=True))
         slide = openslide.open_slide(svs_filename)
+
+        if False:
+            spot_size = 224
+            patch_size = 224
+            X_col_name = 'X'
+            Y_col_name = 'Y'
+            # plot spot figure
+            W, H = slide.level_dimensions[0]
+            img = slide.read_region((0, 0), 0, (W, H)).convert('RGB')
+            draw = ImageDraw.Draw(img)
+            img2 = Image.fromarray(255*np.ones((H, W, 3), dtype=np.uint8))
+            draw2 = ImageDraw.Draw(img2)
+            circle_radius = int(spot_size * 0.5)
+            # colors = np.concatenate([colors, 128*np.ones((colors.shape[0], 1), dtype=np.uint8)], axis=1)
+            for ind, row1 in coord_df.iterrows():
+                x, y = row1[X_col_name], row1[Y_col_name]
+                xy = [x-circle_radius, y-circle_radius, x+circle_radius, y+circle_radius]
+                draw.ellipse(xy, outline=(255, 128, 0), width=8)
+                x -= patch_size // 2
+                y -= patch_size // 2
+                xy = [x, y, x+patch_size, y+patch_size]
+                draw2.rectangle(xy, fill=(144, 238, 144))
+                draw.text((x, y),str(ind),(255,255,255),font=font)
+            img3 = Image.blend(img, img2, alpha=0.4)
+            # img3.save(spot_vis_filename)
 
         fh = io.BytesIO()
         tar_fp = tarfile.open(fileobj=fh, mode='w:gz')
