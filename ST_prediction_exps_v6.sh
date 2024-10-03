@@ -73,7 +73,7 @@ bash /home/zhongz2/ST_prediction/data/10x/cache_data/data_20241003/run.sh
 
 cd $current_dir;
 
-for VAL_INDEX in 1; do
+for VAL_INDEX in {0..22}; do
 python ST_prediction_exps_v6.py \
   --action test \
   --num_gpus ${NUM_GPUS} \
@@ -110,13 +110,16 @@ ACTION=test
 NUM_GPUS=2
 DATA_ROOT=/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20241002
 BACKBONE=resnet50
-LR=1e-5
-BS=64
-FIX_BACKBONE=True
-USE_SMOOTH=False
-sbatch --ntasks=1 --tasks-per-node=1 --partition=gpu --gres=gpu:v100x:1,lscratch:20 --cpus-per-task=8 --time=108:00:00 --mem=64G \
+for LR in 1e-4 1e-5 5e-5 1e-6 5e-6; do
+for BS in 32 64; do
+for FIX_BACKBONE in "True" "False"; do
+for USE_SMOOTH in "True" "False"; do
+sbatch --ntasks=1 --tasks-per-node=1 --partition=gpu --gres=gpu:v100x:1,lscratch:32 --cpus-per-task=8 --time=108:00:00 --mem=64G \
 ST_prediction_exps_v6.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${DATA_ROOT} ${ACTION}
-
+done
+done
+done
+done
 
 
 

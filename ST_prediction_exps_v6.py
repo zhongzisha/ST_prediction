@@ -634,7 +634,7 @@ def test_main(args):
             all_inds['val'].append(svs_prefix_id*np.ones((item['coord_df'].shape[0],),dtype=np.uint8))
             all_coord_df['val'].append(item['coord_df'][[X_col_name, Y_col_name]])
             vst_df = clean_vst(item['vst_df'], gene_names)
-            if use_vst_smooth:
+            if False: # use_vst_smooth:
                 all_vst_df['val'].append(neighbor_smoothing_vst(vst_df))
             else:
                 all_vst_df['val'].append(vst_df)
