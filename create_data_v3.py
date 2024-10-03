@@ -23,6 +23,10 @@ def neighbor_smoothing_vst(vst_df):
     return new_vst_df
 
 
+def clean_str(s):
+    return s.replace('/scratch/cluster_scratch/zhongz2/debug/data/10x/', '')
+
+
 def create_data_v2():
 
     ensembl_df = pd.read_csv('ensembl.tsv', sep='\t', index_col=0, low_memory=False)
@@ -31,13 +35,14 @@ def create_data_v2():
     gene_symbol_dict = {row['Ensembl ID(supplied by Ensembl)']: row['Approved symbol'] for _, row in ensembl_df.iterrows()}
     all_gene_names = [v.upper() for v in list(gene_symbol_dict.values())]
 
+    proj = 'He2020'
     root = '/Users/zhongz2/down/He2020/'
     root = '/scratch/cluster_scratch/zhongz2/debug/data/He2020'
-    root = '/data/zhongz2/temp29/ST_prediction/data/He2020'
+    root = f'/data/zhongz2/temp29/ST_prediction/data/{proj}'
     df = pd.read_csv(f'{root}/metadata.csv')
     low_thres, high_thres = -2, 6
     patch_size = 224
-    patients = df['patient'].unique()
+    patients = df['patient'].unique() if 'patient' in df.columns else df['slide_id']
     version = '20240920_v1'
     selected_gene_names = sorted([
         'GNAS', 'ACTG1', 'FASN', 'DDX5', 'XBP1'
@@ -87,11 +92,11 @@ def create_data_v2():
     mean_df = sum_df / count_df
     selected_gene_names = sorted(list(set(protein_df.index.values).intersection(mean_df.columns.values)))
 
-    version = '20241002'
+    version = '20241003'
     selected_gene_names = []
     protein_df = pd.read_csv('protein_class_Predicted.tsv', sep='\t', index_col=0)
     # selected_gene_names = sorted([v.upper() for v in protein_df.index.values.tolist() if v.upper() in all_gene_names])
-    with open(os.path.join(root, 'metainfo.pkl'), 'rb') as fp:
+    with open(os.path.join('/data/zhongz2/temp29/ST_prediction/data/He2020', 'metainfo.pkl'), 'rb') as fp:
         tmp = pickle.load(fp)
         sum_df = tmp['sum_df']
         count_df = tmp['count_df']
@@ -111,20 +116,38 @@ def create_data_v2():
     font = ImageFont.load_default(32)
 
     alldata = {patient: {} for patient in patients}
-    save_root = f'{root}/cache_data/data_{patch_size}_{version}'
+    save_root = f'{root}/cache_data/data_{version}'
     os.makedirs(save_root, exist_ok=True)
 
     for _, row in df.iterrows():
 
-        svs_prefix = row['histology_image'].replace('.jpg', '')
-        save_filename = os.path.join(save_root, svs_prefix+'.tar.gz')
-        patient = row['patient']
-        alldata[patient][svs_prefix] = {}
-        vst_filename = f'{root}/{svs_prefix}_gene_vst.tsv'
-        svs_filename = f'{root}/{svs_prefix}.jpg'
-        coord_filename = '{}/{}'.format(root, row['spot_coordinates'])
+        if proj == 'He2020':
+            svs_prefix = row['histology_image'].replace('.jpg', '')
+            patient = row['patient']
+            vst_filename = f'{root}/{svs_prefix}_gene_vst.tsv'
+            svs_filename = f'{root}/{svs_prefix}.jpg'
+            coord_filename = '{}/{}'.format(root, row['spot_coordinates'])
+            X_col_name = 'X'
+            Y_col_name = 'Y'
+        elif proj == '10x':
+            svs_prefix = row['slide_id']
+            patient = row['slide_id']
+            vst_filename = '{}/{}'.format(root, clean_str(row['vst_filename']))
+            svs_filename = '{}/{}'.format(root, clean_str(row['svs_filename']))
+            coord_filename = '{}/{}'.format(root, clean_str(row['coord_filename']))
+            X_col_name = 'pxl_col_in_fullres'
+            Y_col_name = 'pxl_row_in_fullres'
+        else:
+            raise ValueError("error project")
 
-        coord_df = pd.read_csv(coord_filename, index_col=0, low_memory=False).astype(np.int32)
+        save_filename = os.path.join(save_root, svs_prefix+'.tar.gz')
+
+        alldata[patient][svs_prefix] = {}
+        if 'tissue_positions_list.csv' in coord_filename:
+            coord_df = pd.read_csv(coord_filename, index_col=0, low_memory=False, header=None).astype(np.int32)
+            coord_df.columns = ['in_tissue', 'array_row', 'array_col', 'pxl_row_in_fullres', 'pxl_col_in_fullres']
+        else:
+            coord_df = pd.read_csv(coord_filename, index_col=0, low_memory=False).astype(np.int32)
 
         vst_df = pd.read_csv(vst_filename, sep='\t', low_memory=False).T
         common_spots = sorted(list(set(coord_df.index.values).intersection(set(vst_df.index.values))))
@@ -137,11 +160,10 @@ def create_data_v2():
         # vst_df_cut = vst_df.apply(lambda col: pd.cut(col, bins=bins, labels=False,include_lowest=True))
         slide = openslide.open_slide(svs_filename)
 
-        if False:
-            spot_size = 224
-            patch_size = 224
-            X_col_name = 'X'
-            Y_col_name = 'Y'
+        vis_filename = os.path.join(root, svs_prefix+'.jpg')
+        if not os.path.exists(vis_filename):
+            spot_size = int(row['spot_size'] if 'spot_size' in row else 224)
+            patch_size = spot_size
             # plot spot figure
             W, H = slide.level_dimensions[0]
             img = slide.read_region((0, 0), 0, (W, H)).convert('RGB')
@@ -151,6 +173,12 @@ def create_data_v2():
             circle_radius = int(spot_size * 0.5)
             # colors = np.concatenate([colors, 128*np.ones((colors.shape[0], 1), dtype=np.uint8)], axis=1)
             for ind, row1 in coord_df.iterrows():
+                if proj == 'He2020':
+                    text = str(ind)
+                elif proj == '10x':
+                    text = '{}x{}'.format(row1['array_col'], row1['array_row'])
+                else:
+                    text = ''
                 x, y = row1[X_col_name], row1[Y_col_name]
                 xy = [x-circle_radius, y-circle_radius, x+circle_radius, y+circle_radius]
                 draw.ellipse(xy, outline=(255, 128, 0), width=8)
@@ -158,9 +186,9 @@ def create_data_v2():
                 y -= patch_size // 2
                 xy = [x, y, x+patch_size, y+patch_size]
                 draw2.rectangle(xy, fill=(144, 238, 144))
-                draw.text((x, y),str(ind),(255,255,255),font=font)
+                draw.text((x, y),text,(255,255,255),font=font)
             img3 = Image.blend(img, img2, alpha=0.4)
-            # img3.save(spot_vis_filename)
+            img3.save(vis_filename)
 
         fh = io.BytesIO()
         tar_fp = tarfile.open(fileobj=fh, mode='w:gz')
@@ -168,7 +196,7 @@ def create_data_v2():
         mean = np.zeros((3, ), dtype=np.float32)
         std = np.zeros((3, ), dtype=np.float32)
         for _, row1 in coord_df.iterrows():
-            xc, yc = row1['X'], row1['Y']
+            xc, yc = row1[X_col_name], row1[Y_col_name]
             patch = slide.read_region((int(xc - patch_size//2), int(yc - patch_size//2)), 0, (patch_size, patch_size)).convert('RGB')
 
             patch_filename = os.path.join(svs_prefix, f'x{xc}_y{yc}.jpg')

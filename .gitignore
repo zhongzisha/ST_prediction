@@ -2,3 +2,17 @@ backbones
 .vscode/
 .git
 __pycache__
+
+data*
+home*
+*.tar.gz
+*.jpg
+*.png
+
+10x*.csv
+
+
+
+
+
+
