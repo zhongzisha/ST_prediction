@@ -26,7 +26,7 @@ else
     module load gcc/11.3.0
     CACHE_ROOT=/lscratch/$SLURM_JOB_ID/ST_prediction_data
 fi
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=4
 
 if [ $ACTION == "train" ]; then
 
@@ -88,6 +88,22 @@ done
 
 fi
 
+if [ $ACTION == "plot" ]; then
+cd $current_dir;
+srun python ST_prediction_exps_v6.py \
+  --action plot \
+  --num_gpus ${NUM_GPUS} \
+  --data_root ${DATA_ROOT} \
+  --backbone ${BACKBONE} \
+  --lr ${LR} \
+  --batch_size ${BS} \
+  --fixed_backbone ${FIX_BACKBONE} \
+  --use_vst_smooth ${USE_SMOOTH} \
+  --val_ind 0
+
+
+fi
+
 
 exit;
 
@@ -121,5 +137,13 @@ done
 done
 done
 
-
-
+ACTION=plot
+NUM_GPUS=2
+DATA_ROOT=/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20241002
+BACKBONE=resnet50
+LR=1e-4
+BS=32
+FIX_BACKBONE=True
+USE_SMOOTH=True
+sbatch --ntasks=24 --tasks-per-node=1 --partition=multinode --cpus-per-task=2 --time=108:00:00 --mem=64G \
+ST_prediction_exps_v6.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${DATA_ROOT} ${ACTION}

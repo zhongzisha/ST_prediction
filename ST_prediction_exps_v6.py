@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import seaborn as sns
 import pyarrow.parquet as pq
 import openslide
@@ -12,6 +13,7 @@ import random
 import io
 import tarfile
 import time
+import idr_torch
 from urllib.parse import urlsplit
 from sklearn.metrics import r2_score
 from scipy.stats import spearmanr, pearsonr
@@ -597,9 +599,9 @@ def test_main(args):
         gene_names = tmp['gene_names']
         low_thres, high_thres = tmp['gene_thres']
     
-    if len(glob.glob(os.path.join(save_dir, '*_result.csv'))) == len(alldata):
+    if len(glob.glob(os.path.join(save_dir, '10x*_result.csv'))) == len(alldata):
         print('already done')
-        sys.exit(-1)
+        sys.exit(0)
 
     model = STModel(backbone=backbone, num_outputs=len(gene_names))
     state_dict = torch.load(ckpt_path, weights_only=True)
@@ -762,18 +764,6 @@ def train_main(args):
     dist.destroy_process_group()
 
 
-if __name__ == '__main__':
-    args = get_args()
-    setup_seed(2024)
-
-    if args.action == 'train':
-        train_main(args=args) 
-    else:
-        test_main(args=args)
-
-
-
-
 """
 
 NUM_GPUS=2
@@ -802,12 +792,12 @@ torchrun \
 
 """
 
-def plot_curves():
+def plot_curves(args):
+    val_ind = idr_torch.rank
 
-    import glob,os,io,tarfile,time,pickle
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
+    debug = False
+    if not debug and val_ind<0 or val_ind>22:
+        sys.exit(0)
 
     root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240925_secreted/results/val_0/gpus2'
     data_root = '/data/zhongz2/temp29/ST_prediction/data/He2020/cache_data/data_224_20240925_secreted'
@@ -824,7 +814,6 @@ def plot_curves():
     root = '/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20240927_v3/results/val_0/gpus2'
     data_root = '/home/zhongz2/ST_prediction/data/He2020/cache_data/data_224_20240927_v3/'
 
-    root = './data/He2020/cache_data/data_224_20241002/results/val_0/gpus2/'
     data_root = './data/He2020/cache_data/data_224_20241002/'
 
     # check the data, plot hist
@@ -835,7 +824,12 @@ def plot_curves():
         low_thres, high_thres = tmp['gene_thres']
     bins = np.arange(low_thres, high_thres, 1)
 
-    val_ind = 0
+    root = f'./data/He2020/cache_data/data_224_20241002/results/val_{val_ind}/gpus2/'
+    save_filename = os.path.join(root, '..', '..', f'val_{val_ind}_figures_sum_new.tar.gz')
+    if not debug and os.path.exists(save_filename):
+        sys.exit(0)
+
+    print(root)
 
     all_svs_prefixes = []
     all_inds = {'train': [], 'val': []}
@@ -872,51 +866,173 @@ def plot_curves():
     trn_sum = all_vst_df['train'].sum(axis=0)
     trn_mean = all_vst_df['train'].mean(axis=0)
 
-    files = glob.glob(f'{root}/**/**/*_99.pt')
+    backbones = ['resnet50']
+    learning_rates = ['0.0001', '1e-05', '1e-06', '5e-05', '5e-06']
+    batch_sizes = [32, 64]
+    if debug:
+        backbones = ['resnet50']
+        learning_rates = ['1e-05']
+        batch_sizes = [32]
+
+    index_map = {
+    '10x_CytAssist_11mm_FFPE_Human_Colorectal_Cancer_2.0.1':'Colorectal',
+       '10x_CytAssist_11mm_FFPE_Human_Glioblastoma_2.0.1':'Glioblastoma',
+       '10x_CytAssist_11mm_FFPE_Human_Kidney_2.0.1': 'Kidney',
+       '10x_CytAssist_11mm_FFPE_Human_Lung_Cancer_2.0.1': 'Lung',
+       '10x_CytAssist_11mm_FFPE_Human_Ovarian_Carcinoma_2.0.0': 'OvarianCarci',
+       '10x_CytAssist_FFPE_Human_Colon_Rep1_2.1.0': 'Colon_Rep1',
+       '10x_CytAssist_FFPE_Human_Lung_Squamous_Cell_Carcinoma_2.0.0': 'LSCC',
+       '10x_Visium_FFPE_Human_Breast_Cancer_1.3.0': 'Breast',
+       '10x_Visium_FFPE_Human_Cervical_Cancer_1.3.0':'Cervical',
+       '10x_Visium_FFPE_Human_Intestinal_Cancer_1.3.0':'Intestinal',
+       '10x_Visium_FFPE_Human_Normal_Prostate_1.3.0':'Prostate',
+       '10x_Visium_FFPE_Human_Ovarian_Cancer_1.3.0':'OvarianCancer',
+       '10x_Visium_FFPE_Human_Prostate_Acinar_Cell_Carcinoma_1.3.0':'PACC',
+       '10x_Visium_FFPE_Human_Prostate_Cancer_1.3.0':'ProstateCancer'
+    }
+
+
     fh = io.BytesIO()
     tar_fp = tarfile.open(fileobj=fh, mode='w:gz')
-    
-    for f in files:
-        d = os.path.dirname(f)
 
-        r2 = pd.read_csv(os.path.join(d, 'val_r2score.csv'), index_col=0)
-        pearson = pd.read_csv(os.path.join(d, 'val_pearsonr_corr.csv'), index_col=0)
-        spearman = pd.read_csv(os.path.join(d, 'val_spearmanr_corr.csv'), index_col=0)
+    for lr in learning_rates:
+        for bs in batch_sizes:
+            for backbone in backbones:
 
-        s = r2.sum(axis=0)
-        # s = r2.max(axis=0)
-        sorted_names = s.sort_values(ascending=False).index
-        r2 = r2[sorted_names]
-        pearson = pearson[sorted_names]
-        spearman = spearman[sorted_names]
+                save_prefix = f'val_{val_ind}/backbone{backbone}_lr{lr}_bs{bs}'
+                results = {}
+                for fixed in ['True', 'False']:
+                    for smooth in ['True', 'False']:
+                        d = os.path.join(root, f'backbone{backbone}_fixed{fixed}', f'lr{lr}_b{bs}_e100_accum1_v0_smooth{smooth}')
+                        if not os.path.exists(os.path.join(d, 'snapshot_99.pt')):
+                            continue
+                        r2 = pd.read_csv(os.path.join(d, 'val_r2score.csv'), index_col=0)
+                        pearson = pd.read_csv(os.path.join(d, 'val_pearsonr_corr.csv'), index_col=0)
+                        spearman = pd.read_csv(os.path.join(d, 'val_spearmanr_corr.csv'), index_col=0)
+                        results_10x = {}
+                        for filename in glob.glob(os.path.join(d, '10x_*result.csv')):
+                            results_10x[os.path.basename(filename).replace('_result.csv', '')] = pd.read_csv(filename, index_col=0)
+                        if debug: 
+                            print(d, len(results_10x))
+                        if len(results_10x)>0:
+                            results[f'fixed{fixed}_smooth{smooth}'] = {
+                                'r2': r2, 'pearson': pearson, 'spearman': spearman,
+                                'results_10x': results_10x
+                            }
 
-        for j,gene_name in enumerate(sorted_names[:min(50, r2.shape[1])]):
-            fig, axes = plt.subplots(nrows=1, ncols=2)
-            ax = axes[0]
-            r2[gene_name].plot(ax=ax)
-            spearman[gene_name].plot(ax=ax)
-            pearson[gene_name].plot(ax=ax)
-            ax.legend(['r2', 'spearman', 'pearson'])
-            ax.set_title('{}, rank = {}'.format(gene_name, j+1))
-            # plt.savefig(os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+                if len(results) != 4:
+                    continue
+                elif debug: 
+                    print(save_prefix, len(results))
+                
+                r2 = results['fixedFalse_smoothTrue']['r2']
+                s = r2.sum(axis=0)
+                # s = r2.max(axis=0)
+                sorted_names = s.sort_values(ascending=False).index
 
-            ax = axes[1]
-            all_vst_df['train'][gene_name].hist(bins=bins, ax=ax)
-            all_vst_df['val'][gene_name].hist(bins=bins, ax=ax)
+                for j,gene_name in enumerate(sorted_names[:min(50, r2.shape[1])]):
 
-            im_buffer = io.BytesIO()
-            plt.savefig(im_buffer, format='JPEG')
-            info = tarfile.TarInfo(name=os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
-            info.size = im_buffer.getbuffer().nbytes
-            info.mtime = time.time()
-            im_buffer.seek(0)
-            tar_fp.addfile(info, im_buffer)
+                    fig = plt.figure(figsize=(2*4, (1+len(results))*4))
+                    gs = GridSpec(nrows=5, ncols=2, figure=fig)
 
-            plt.close()
+                    ax = fig.add_subplot(gs[0, :])
+                    all_vst_df['train'][gene_name].hist(bins=bins, ax=ax)
+                    all_vst_df['val'][gene_name].hist(bins=bins, ax=ax)
+                    ax.set_title('{}, rank = {}'.format(gene_name, j+1))
+
+                    for i, (k, v) in enumerate(results.items()):
+                        # rr, cc = (i+2)//2, (i+2)%2
+                        ax = fig.add_subplot(gs[i+1, 0])
+                        v['r2'][gene_name].plot(ax=ax)
+                        v['spearman'][gene_name].plot(ax=ax)
+                        v['pearson'][gene_name].plot(ax=ax)
+                        ax.legend(['r2', 'spearman', 'pearson'])
+                        ax.set_title(k)
+                    
+                        result_10x = []
+                        for kk, vv in v['results_10x'].items():
+                            try:
+                                result_10x.append([kk] + vv.loc[gene_name].values.tolist())
+                            except:
+                                if debug: 
+                                    print(gene_name, ' not in {}'.format(k))
+                                pass
+                        if len(result_10x) == 0:
+                            if debug: 
+                                print(i, k)
+                            continue
+
+                        result_10x_df = pd.DataFrame(result_10x, columns=['svs_prefix'] + vv.columns.values.tolist())
+                        result_10x_df = result_10x_df.set_index('svs_prefix')[['r2',  'spearman_corr',  'pearsonr_corr']]
+                        result_10x_df.index = result_10x_df.index.map(index_map)
+                        ax = fig.add_subplot(gs[i+1, 1])
+
+                        # Plot each column's data with a different marker and label
+                        ax.scatter(result_10x_df.index, result_10x_df['r2'], label='r2', marker='o', color='r')
+                        ax.scatter(result_10x_df.index, result_10x_df['spearman_corr'], label='spearman', marker='s', color='g')
+                        ax.scatter(result_10x_df.index, result_10x_df['pearsonr_corr'], label='pearson', marker='^', color='b')
+                        ax.tick_params('x', labelrotation=90)
+                        ax.legend(['r2', 'spearman', 'pearson'])
+
+                    plt.tight_layout()
+
+                    im_buffer = io.BytesIO()
+                    plt.savefig(im_buffer, format='JPEG')
+                    info = tarfile.TarInfo(name=os.path.join(save_prefix, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+                    info.size = im_buffer.getbuffer().nbytes
+                    info.mtime = time.time()
+                    im_buffer.seek(0)
+                    tar_fp.addfile(info, im_buffer)
+
+                    plt.close('all')
 
     tar_fp.close()
-    with open(os.path.join(root, 'val_figures_sum.tar.gz'), 'wb') as fp:
+    with open(save_filename, 'wb') as fp:
         fp.write(fh.getvalue())
+
+    if False:
+        files = glob.glob(f'{root}/**/**/*_99.pt')              
+        for f in files:
+            d = os.path.dirname(f)
+
+            r2 = pd.read_csv(os.path.join(d, 'val_r2score.csv'), index_col=0)
+            pearson = pd.read_csv(os.path.join(d, 'val_pearsonr_corr.csv'), index_col=0)
+            spearman = pd.read_csv(os.path.join(d, 'val_spearmanr_corr.csv'), index_col=0)
+
+            s = r2.sum(axis=0)
+            # s = r2.max(axis=0)
+            sorted_names = s.sort_values(ascending=False).index
+            r2 = r2[sorted_names]
+            pearson = pearson[sorted_names]
+            spearman = spearman[sorted_names]
+
+            for j,gene_name in enumerate(sorted_names[:min(50, r2.shape[1])]):
+                fig, axes = plt.subplots(nrows=1, ncols=2)
+                ax = axes[0]
+                r2[gene_name].plot(ax=ax)
+                spearman[gene_name].plot(ax=ax)
+                pearson[gene_name].plot(ax=ax)
+                ax.legend(['r2', 'spearman', 'pearson'])
+                ax.set_title('{}, rank = {}'.format(gene_name, j+1))
+                # plt.savefig(os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+
+                ax = axes[1]
+                all_vst_df['train'][gene_name].hist(bins=bins, ax=ax)
+                all_vst_df['val'][gene_name].hist(bins=bins, ax=ax)
+
+                im_buffer = io.BytesIO()
+                plt.savefig(im_buffer, format='JPEG')
+                info = tarfile.TarInfo(name=os.path.join(d, 'val_{:02d}_{}.jpg'.format(j+1, gene_name)))
+                info.size = im_buffer.getbuffer().nbytes
+                info.mtime = time.time()
+                im_buffer.seek(0)
+                tar_fp.addfile(info, im_buffer)
+
+                plt.close()
+
+        tar_fp.close()
+        with open(save_filename, 'wb') as fp:
+            fp.write(fh.getvalue())
 
 
 
@@ -969,3 +1085,13 @@ def main():
         all_labels.append(labels)
         all_preds.append(preds)
 
+if __name__ == '__main__':
+    args = get_args()
+    setup_seed(2024)
+
+    if args.action == 'train':
+        train_main(args=args) 
+    elif args.action == 'test':
+        test_main(args=args)
+    elif args.action == 'plot':
+        plot_curves(args=args)
