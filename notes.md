@@ -31,7 +31,10 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 学习SAA的内容。买入CHAU，没想到收盘涨了点。看今晚A股能怎么样。
 
 
+2024-10-08
 
+今天股票大亏！
+看完了SAA，看完了MLS，开始看题目了。加油！
 
 
 
