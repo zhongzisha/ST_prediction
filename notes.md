@@ -26,7 +26,9 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 然后准备ppt和ST prediction实验。
 
 
+2024-10-07
 
+学习SAA的内容。买入CHAU，没想到收盘涨了点。看今晚A股能怎么样。
 
 
 
