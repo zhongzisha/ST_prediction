@@ -61,7 +61,8 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 
 时间很紧，有很多不懂的，要形成体系了。
 
-
+看了BetBoom的比赛，很精彩。
+用ChatGPT复习。
 
 
 
