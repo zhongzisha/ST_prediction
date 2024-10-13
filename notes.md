@@ -64,6 +64,13 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 看了BetBoom的比赛，很精彩。
 用ChatGPT复习。
 
+2024-10-13
+
+今天打算把各种机器学习算法都用手敲一遍，只用Python和Numpy.
+一个字：干！
+各种理论问题，全部都搜刮一遍，我就不信了！
+你没付出努力之前，就不要怪老天没给你天赋！
+
 
 
 
