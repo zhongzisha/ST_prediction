@@ -95,3 +95,11 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 今天什么都没干。。。怎么会变成这样。
 
 
+2024-10-17
+
+今天终于把第一个视频看完了。。。总是没状态。
+下午meeting简单聊了一下。
+
+
+
+
