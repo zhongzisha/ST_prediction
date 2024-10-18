@@ -101,5 +101,7 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 下午meeting简单聊了一下。
 
 
+2024-10-18
 
+把test2看完了。依然效率很低。
 
