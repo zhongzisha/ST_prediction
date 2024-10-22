@@ -119,3 +119,7 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 基本上什么都没干。买入国债。TLT跌了很多。
 
 
+2024-10-22
+
+什么都没干。只想炒股。这可怎么办。
+
