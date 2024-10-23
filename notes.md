@@ -123,3 +123,24 @@ GIT_COMMITTER_DATE="Sun Sep 29 14:34:50 2024 -0400" git commit --amend --no-edit
 
 什么都没干。只想炒股。这可怎么办。
 
+
+2024-10-23
+
+If you type ps aux, you’ll get a detailed output of all linux processes running at that time.
+
+Here’s a little trick that allows you to sort that output by memory consumption, so the biggest memory consumers are at the bottom.
+
+$ ps aux | sort -nk +4 | tail -n 10
+This sorts the output of ps by the 4th field (%MEM) and only shows the last 10 lines.
+
+Alternatively, you can also pass the --sort parameter to ps directly. For instance:
+
+$ ps aux --sort -rss | head
+This shows the top consumers at the top.
+
+
+今天SPX堵错了，TSLA卖早了。
+
+
+
+
