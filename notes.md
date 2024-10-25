@@ -150,3 +150,12 @@ This shows the top consumers at the top.
 下次一定不能在财报前卖put或者卖call。财报当天有很多机会的。
 先试着做做看。
 
+2024-10-25
+
+今天又是什么都没干。一直亏一直亏。。。
+
+
+
+
+
+
