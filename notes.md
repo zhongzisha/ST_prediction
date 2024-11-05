@@ -240,7 +240,9 @@ This shows the top consumers at the top.
 
 什么都没干。没有冲劲了。怕这怕那，希望去公司，但是又怕竞争。
 
+2024-11-5
 
+什么都没干，看了一下single cell分析，很犹豫。不知道要不要干这个工作。
 
 
 
