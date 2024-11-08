@@ -261,6 +261,14 @@ This shows the top consumers at the top.
 
 发现DPST的卖方，在所有行权价的位置，都挂了同样卖家的单。
 
+2024-11-08
+
+要开始准备Retreat的presentation了。
+
+打算试试TNBC数据集
+
+
+
 
 
 
