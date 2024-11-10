@@ -43,12 +43,48 @@ def get_subdir_path(filename):
     subdir_path = os.path.join(subdir1, subdir2, subdir3)
     return subdir_path
 
-def step1():
+def step1_examples():
+    valid_genes = []
+    excel_filename = '/data/zhongz2/temp29/ST_prediction/data/TNBC.xlsx'
+    final_save_root = '/data/zhongz2/temp29/ST_prediction/data/TNBC_generated'
+    step1(excel_filename, final_save_root, valid_genes)
 
-    df = pd.read_excel('/data/zhongz2/temp29/ST_prediction/data/TNBC.xlsx', index_col=0)
+    with open(os.path.join(final_save_root, 'valid_genes.pkl'), 'rb') as fp:
+        valid_genes = pickle.load(fp)['valid_genes']
+    excel_filename = '/data/zhongz2/temp29/ST_prediction/data/10xGenomics.xlsx'
+    final_save_root = '/data/zhongz2/temp29/ST_prediction/data/10xGenomics_genenerated'
+    step1(excel_filename, final_save_root, valid_genes)
+
+def get_10xGenomics():
+    excel_filename = '/data/zhongz2/temp29/ST_prediction/data/10xGenomics.xlsx'
+    slide_ids = [
+        'V1_Breast_Cancer_Block_A_Section_1',
+        'V1_Breast_Cancer_Block_A_Section_2',
+        'Visium_FFPE_Human_Breast_Cancer'
+    ]
+    items = []
+    for slide_id in slide_ids:
+        items.append(
+            (
+                slide_id, 
+                f'/data/zhongz2/temp29/ST_prediction/data/10xGenomics/{slide_id}/{slide_id}_filtered_feature_bc_matrix.h5',
+                f'/data/zhongz2/temp29/ST_prediction/data/10xGenomics/{slide_id}/{slide_id}_image.tif',
+                f'/data/zhongz2/temp29/ST_prediction/data/10xGenomics/{slide_id}/spatial/scalefactors_json.json',
+                f'/data/zhongz2/temp29/ST_prediction/data/10xGenomics/{slide_id}/spatial/tissue_positions_list.csv',
+                slide_id
+            )
+        )
+    df = pd.DataFrame(items, columns=['patient_id', 'counts_filename', 'TruePath', 'scalefactors_json', 'coord_filename', 'slide_id'])
+    df.to_excel(excel_filename)
+
+def step1(excel_filename, final_save_root, valid_genes=None):
+
+    df = pd.read_excel(excel_filename, index_col=0)
+    for col in ['patient_id', 'counts_filename', 'TruePath', 'scalefactors_json', 'coord_filename', 'slide_id']:
+        assert col in df.columns
+
     patient_ids = np.unique(df['patient_id'].values)
 
-    final_save_root = '/data/zhongz2/temp29/ST_prediction/data/TNBC'
     os.makedirs(final_save_root, exist_ok=True)
 
     all_coords_df = []
@@ -61,7 +97,7 @@ def step1():
 
         count_filename = row['counts_filename']
         svs_filename = row['TruePath']
-        with open('/data/Jiang_Lab/Data/Zisha_Zhong/hk_TNBC_ST/TNBC_data/{}/spatial/scalefactors_json.json'.format(row['slide_id']), 'r') as fp:
+        with open(row['scalefactors_json'], 'r') as fp:
             spot_size = float(json.load(fp)['spot_diameter_fullres'])
 
         coord_df = pd.read_csv(row['coord_filename'], header=None, index_col=0, low_memory=False)
@@ -83,9 +119,9 @@ def step1():
         if len(invalid_col_index):# invalid genes 
             counts_df = counts_df.drop(columns=counts_df.columns[invalid_col_index])  
 
-        invalid_row_index = np.where((counts_df != 0).sum(axis=1) < 100)[0]
-        if len(invalid_row_index):# invalid spots 
-            counts_df = counts_df.drop(index=counts_df.iloc[invalid_row_index].index)
+        # invalid_row_index = np.where((counts_df != 0).sum(axis=1) < 100)[0]
+        # if len(invalid_row_index):# invalid spots 
+        #     counts_df = counts_df.drop(index=counts_df.iloc[invalid_row_index].index)
 
         coord_df = coord_df.loc[[v for v in counts_df.index.values if v in coord_df.index.values]] # only keep those spots with gene counts
         coord_df.columns = ['in_tissue', 'array_row', 'array_col', 'pxl_row_in_fullres', 'pxl_col_in_fullres']
@@ -112,16 +148,18 @@ def step1():
     counts_df = counts_df.astype('int')
     del all_counts_df
 
-    counts_df1 = counts_df>0  # has expressed
-    res=counts_df1.sum(axis=0)  # number of spots that has expressed
-    res=res.sort_values(ascending=False)
-    res1=res/len(counts_df) # 
-    valid_genes = res1[res1>0.1].index.values
-    with open(os.path.join(final_save_root, 'valid_genes.pkl'), 'wb') as fp:
-        pickle.dump({'valid_genes': valid_genes}, fp)
-    del counts_df1, res
+    if valid_genes is None or len(valid_genes) == 0:
+        counts_df1 = counts_df>0  # has expressed
+        res=counts_df1.sum(axis=0)  # number of spots that has expressed
+        res=res.sort_values(ascending=False)
+        res1=res/len(counts_df) # 
+        valid_genes = res1[res1>0.1].index.values
+        with open(os.path.join(final_save_root, 'valid_genes.pkl'), 'wb') as fp:
+            pickle.dump({'valid_genes': valid_genes}, fp)
+        del counts_df1, res
 
-    counts_df = counts_df[valid_genes]
+    # counts_df = counts_df[valid_genes]
+    counts_df = select_or_fill(counts_df, valid_genes)
     counts_df.to_csv(os.path.join(final_save_root, 'all_counts.csv'), index=False)
 
     coords_df_new = coords_df.copy()
@@ -132,7 +170,7 @@ def step1():
         svs_prefix = row['slide_id'] 
         count_filename = row['counts_filename']
         svs_filename = row['TruePath']
-        with open('/data/Jiang_Lab/Data/Zisha_Zhong/hk_TNBC_ST/TNBC_data/{}/spatial/scalefactors_json.json'.format(row['slide_id']), 'r') as fp:
+        with open(row['scalefactors_json'], 'r') as fp:
             tmp = json.load(fp)
             spot_size = float(tmp['spot_diameter_fullres'])
             fiducial_diameter_fullres = float(tmp['fiducial_diameter_fullres'])
@@ -207,12 +245,44 @@ def create_train_val(val_patient_ids=[]):
             'val_coords_df': val_coords_df 
         }, fp)
 
+def create_train_test():
+    # train on TNBC
+    # test on 10x
+
+    final_save_root = '/data/zhongz2/temp29/ST_prediction/data/TNBC_generated'
+    train_coords_df = pd.read_csv(os.path.join(final_save_root, 'all_coords.csv'))
+    train_counts_df = pd.read_csv(os.path.join(final_save_root, 'all_counts.csv'))
+    train_counts_df = np.log10(1.0 + train_counts_df)
+
+    final_save_root = '/data/zhongz2/temp29/ST_prediction/data/10xGenomics_generated'
+    val_coords_df = pd.read_csv(os.path.join(final_save_root, 'all_coords.csv'))
+    val_counts_df = pd.read_csv(os.path.join(final_save_root, 'all_counts.csv'))
+    val_counts_df = np.log10(1.0 + val_counts_df)
+
+    scaler = MinMaxScaler()
+    train_counts = scaler.fit_transform(train_counts_df)
+    val_counts = scaler.transform(val_counts_df)
+
+    # train_coords_df.T.to_parquet(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'train_coords_df.parquet'), engine='fastparquet')
+
+    save_root = os.path.join('/lscratch', os.environ['SLURM_JOB_ID'])
+    with open(os.path.join(save_root, 'train_val.pkl'), 'wb') as fp:
+        pickle.dump({
+            'train_counts': train_counts,
+            'val_counts': val_counts,
+            'train_coords_df': train_coords_df,
+            'val_coords_df': val_coords_df 
+        }, fp)
+
 
 if __name__ == '__main__':
-    val_patient_ids = [int(v) for v in sys.argv[1].split(',')]
-    print(val_patient_ids)
-    create_train_val(val_patient_ids)
 
+    if sys.argv[1] != 'None':
+        val_patient_ids = [int(v) for v in sys.argv[1].split(',')]
+        print(val_patient_ids)
+        create_train_val(val_patient_ids)
+    else:
+        create_train_test()
 
 
 
