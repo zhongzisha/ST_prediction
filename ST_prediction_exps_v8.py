@@ -386,13 +386,12 @@ class STModel(nn.Module):
             raise ValueError('error')
 
         self.rho = nn.Sequential(*[
-            nn.Linear(BACKBONE_DICT[backbone], 512), 
+            nn.Linear(BACKBONE_DICT[backbone], BACKBONE_DICT[backbone]), 
             nn.ReLU(), 
             nn.Dropout(dropout)
         ])
 
-        self.fc = nn.Linear(512, num_outputs)
-        # self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
+        self.fc = nn.Linear(BACKBONE_DICT[backbone], num_outputs)
 
         # self.initialize_weights()
         self.rho.apply(self._init_weights)
@@ -427,9 +426,9 @@ class STModel(nn.Module):
 
 
 class PatchDataset(Dataset):
-    def __init__(self, patch_filenames, counts_np, transform, is_train=False, cache_root='./'):
+    def __init__(self, coords_df, counts_np, transform, is_train=False, cache_root='./'):
         super().__init__()
-        self.patch_filenames = patch_filenames
+        self.coords_df = coords_df
         self.counts_np = counts_np
 
         self.transform = transform 
@@ -437,10 +436,10 @@ class PatchDataset(Dataset):
         self.cache_root = cache_root
 
     def __len__(self):
-        return len(self.patch_filenames)
+        return len(self.coords_df)
 
     def __getitem__(self, idx): 
-        patch = Image.open(os.path.join(self.cache_root, self.patch_filenames[idx]))
+        patch = Image.open(os.path.join(self.cache_root, self.coords_df.loc[idx, 'patch_filename']))
         if self.is_train:
             if np.random.rand() < 0.5:
                 patch = patch.rotate(np.random.choice([90, 180, 270]))
@@ -492,7 +491,8 @@ def get_args():
     parser.add_argument('--save_every', type=int, default=200)
     parser.add_argument('--accum_iter', type=int, default=1)
     parser.add_argument('--fixed_backbone', type=str, default='False')
-    parser.add_argument('--use_vst_smooth', type=str, default='False')
+    parser.add_argument('--use_gene_smooth', type=str, default='False')
+    parser.add_argument('--use_stain_normalization', type=str, default='False')
     parser.add_argument('--val_inds', type=str, default='None')
 
     return parser.parse_args()
@@ -508,7 +508,8 @@ def train_main(args):
     lr = args.lr
     batch_size = args.batch_size
     fixed_backbone = args.fixed_backbone == 'True'
-    use_vst_smooth = args.use_vst_smooth == 'True'
+    use_gene_smooth = args.use_gene_smooth == 'True'
+    use_stain_normalization = args.use_stain_normalization == 'True'
 
     max_epochs = args.max_epochs
     save_every = args.save_every
@@ -519,7 +520,7 @@ def train_main(args):
     else:
         val_inds = [int(v) for v in args.val_inds.split(',')]
         val_inds_str = args.val_inds.replace(',', '_')
-    save_root = f'{cache_root}/results/val_{val_inds_str}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0_smooth{use_vst_smooth}'
+    save_root = f'{cache_root}/results/val_{val_inds_str}/gpus{num_gpus}/backbone{backbone}_fixed{fixed_backbone}/lr{lr}_b{batch_size}_e{max_epochs}_accum{accum_iter}_v0_smooth{use_gene_smooth}_stain{use_stain_normalization}'
     os.makedirs(save_root, exist_ok=True)
 
     if os.path.exists(os.path.join(save_root, 'snapshot_{}.pt'.format(args.max_epochs - 1))):
@@ -552,14 +553,14 @@ def train_main(args):
 
     with open(os.path.join(cache_root, 'train_val.pkl'), 'rb') as fp:
         tmp = pickle.load(fp)
-        train_filenames = tmp['train_coords_df']['patch_filename'].values
-        val_filenames = tmp['val_coords_df']['patch_filename'].values
+        train_coords_df = tmp['train_coords_df'].reset_index(drop=True)
+        val_coords_df = tmp['val_coords_df'].reset_index(drop=True)
         train_counts = tmp['train_counts'].astype(np.float32)
         val_counts = tmp['val_counts'].astype(np.float32)
         del tmp
 
-    train_dataset = PatchDataset(patch_filenames=train_filenames, counts_np=train_counts, transform=train_transform, is_train=True, cache_root=os.path.join(cache_root, 'images'))
-    val_dataset = PatchDataset(patch_filenames=val_filenames, counts_np=val_counts, transform=val_transform, is_train=False, cache_root=os.path.join(cache_root, 'images'))
+    train_dataset = PatchDataset(coords_df=train_coords_df, counts_np=train_counts, transform=train_transform, is_train=True, cache_root=os.path.join(cache_root, 'images'))
+    val_dataset = PatchDataset(coords_df=val_coords_df, counts_np=val_counts, transform=val_transform, is_train=False, cache_root=os.path.join(cache_root, 'images'))
 
     dataloaders = {
         'train':
@@ -610,7 +611,7 @@ def train_main(args):
         }
         bins = np.arange(0, 1, 0.1)
 
-        for j,gene_name in enumerate(sorted_names[:min(50, r2.shape[1])]):
+        for j,gene_name in enumerate(sorted_names[:min(5000, r2.shape[1])]):
             fig, axes = plt.subplots(nrows=1, ncols=2)
             ax = axes[0]
             r2[gene_name].plot(ax=ax)
@@ -644,6 +645,7 @@ def train_main(args):
 
 if __name__ == '__main__':
     args = get_args()
+    print('args: ', args)
     setup_seed(2024)
 
     if args.action == 'train':

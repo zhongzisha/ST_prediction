@@ -34,7 +34,9 @@ cd images
 for f in `ls /data/zhongz2/temp29/ST_prediction/data/TNBC/*_patches.tar.gz`; do tar -xf $f; done
 cd $current_dir
 
-python prepare_TNBC_v2.py ${VAL_INDEX}
+python prepare_TNBC_v2.py \
+--val_inds ${VAL_INDEX} \
+--use_gene_smooth ${USE_SMOOTH}
 wait;
 
 while
@@ -57,7 +59,7 @@ torchrun \
     --lr ${LR} \
     --batch_size ${BS} \
     --fixed_backbone ${FIX_BACKBONE} \
-    --use_vst_smooth ${USE_SMOOTH} \
+    --use_gene_smooth ${USE_SMOOTH} \
     --val_inds ${VAL_INDEX} \
     --max_epochs ${MAX_EPOCHS} \
     --data_root "/data/zhongz2/temp29/ST_prediction/data/TNBC"
