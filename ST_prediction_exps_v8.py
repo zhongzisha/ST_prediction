@@ -498,6 +498,76 @@ def get_args():
     return parser.parse_args()
 
 
+
+
+def build_dataloaders(args):
+    train_df = pd.read_excel(args.train_csv) if 'xlsx' in args.train_csv else pd.read_csv(args.train_csv)
+    val_df = pd.read_excel(args.val_csv) if 'xlsx' in args.val_csv else pd.read_csv(args.val_csv)
+
+    ### data realted
+    if True:  # use imagenet mean and std
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+
+    train_transform = transforms.Compose([
+        transforms.Resize((224, 224)), 
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        # transforms.ElasticTransform(alpha=50.),
+        # transforms.ColorJitter(brightness=.3, hue=.2),
+        # transforms.GaussianBlur(kernel_size=(5, 9)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std)
+    ])
+    val_transform = transforms.Compose([
+        transforms.Resize((224, 224)), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean, std)
+    ])
+
+    train_coords_df = []
+    train_counts = []
+    for rowid, row in train_df.iterrows():
+        save_prefix = '{}_{}_{}'.format(row['cohort_name'], row['data_version'], row['slide_id'])
+        coord_df = pd.read_csv(os.path.join(args.data_root, save_prefix+'_coord.csv'))
+        count_pt = torch.load(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'cache_data', save_prefix+'_gene_count.pth'), weights_only=True)
+        train_coords_df.append(coord_df)
+        train_counts.append(count_pt)
+    train_coords_df = pd.concat(train_coords_df)
+    train_coords_df.index = np.arange(len(train_coords_df))
+    train_counts = torch.cat(train_counts)
+
+    train_dataset = PatchDataset(coords_df=train_coords_df, counts=train_counts, transform=train_transform, is_train=True, cache_root=os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'images'))
+
+
+    val_coords_df = []
+    val_counts = []
+    for rowid, row in val_df.iterrows():
+        save_prefix = '{}_{}_{}'.format(row['cohort_name'], row['data_version'], row['slide_id'])
+        coord_df = pd.read_csv(os.path.join(args.data_root, save_prefix+'_coord.csv'))
+        count_pt = torch.load(os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'cache_data', save_prefix+'_gene_count.pth'), weights_only=True)
+        val_coords_df.append(coord_df)
+        val_counts.append(count_pt)
+    val_coords_df = pd.concat(val_coords_df)
+    val_coords_df.index = np.arange(len(val_coords_df))
+    val_counts = torch.cat(val_counts)
+
+    train_dataset = PatchDataset(coords_df=train_coords_df, counts=train_counts, transform=train_transform, is_train=True, cache_root=os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'images'))
+    val_dataset = PatchDataset(coords_df=val_coords_df, counts=val_counts, transform=val_transform, is_train=False, cache_root=os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'images'))
+        
+
+    dataloaders = {
+        'train':
+            DataLoader(train_dataset, num_workers=4, batch_size=args.batch_size, pin_memory=True, shuffle=False, 
+                sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=False)),
+        'val':
+            DataLoader(val_dataset, num_workers=4, batch_size=args.batch_size, pin_memory=True, shuffle=False, 
+                sampler=DistributedSampler(val_dataset, shuffle=False, drop_last=False))
+    }
+
+    return dataloaders
+
+
 def train_main(args):
 
     ddp_setup()

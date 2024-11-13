@@ -3,7 +3,6 @@ backbones
 .git
 __pycache__
 
-data*
 home*
 *.tar.gz
 *.jpg

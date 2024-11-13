@@ -13,9 +13,9 @@ import tarfile
 import torch
 import hashlib
 import idr_torch
-import PIL
-PIL.Image.MAX_IMAGE_PIXELS = 12660162500
+
 from PIL import Image, ImageFile, ImageDraw, ImageFilter, ImageFont
+Image.MAX_IMAGE_PIXELS = 12660162500
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 

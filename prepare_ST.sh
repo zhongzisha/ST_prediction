@@ -42,14 +42,13 @@ sbatch --time=24:00:00 \
 python prepare_ST_train_val.py \
 --train_csv "/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx" \
 --val_csv "/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx" \
---exp_name "exp_smoothFalse" 
+--use_smooth "False"
 
 
 python prepare_ST_train_val.py \
 --train_csv "/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx" \
 --val_csv "/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx" \
---exp_name "exp_smoothTrue" \
---use_smooth 
+--use_smooth "True"
 
 
 

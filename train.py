@@ -1,18 +1,15 @@
 
-import sys,os,glob
+import sys,os
 import numpy as np
 import pandas as pd
 import pickle
 import random
-from sklearn.metrics import r2_score, mean_squared_error
-from scipy.stats import spearmanr, pearsonr
 
 import torch
 torch.set_printoptions(sci_mode=False)
 # torch.multiprocessing.set_sharing_strategy('file_system')
 torch.multiprocessing.set_sharing_strategy('file_descriptor')
 import torch.nn as nn
-import torchvision
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -31,10 +28,6 @@ def setup_seed(seed):
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
     random.seed(seed)
-
-
-def ddp_setup():
-    dist.init_process_group(backend="nccl")
 
 
 def collect_results_gpu(part_tensor, size, world_size):
@@ -122,7 +115,7 @@ class Trainer:
         if self.gpu_id == 0:
             self.losses.append([epoch, total_loss.item()])
             log_df = pd.DataFrame(self.losses, columns=['epoch', 'total_loss'])
-            log_df.to_csv(os.path.join(self.save_root, f'train_loss.csv'), float_format='%.3f')
+            log_df.to_csv(os.path.join(self.save_root, f'train_loss.csv'), float_format='%.3f', index=False)
 
         dist.barrier()
 
@@ -143,7 +136,7 @@ class Trainer:
 
 def train_main(args):
 
-    ddp_setup()
+    dist.init_process_group(backend="nccl")
 
     cache_root = os.path.join(args.data_root, 'exp_smooth{}'.format(args.use_smooth))
     save_root = f'{cache_root}/results/gpus{args.num_gpus}/backbone{args.backbone}_fixed{args.fixed_backbone}/lr{args.lr}_b{args.batch_size}_e{args.max_epochs}_accum{args.accum_iter}_v0_smooth{args.use_smooth}_stain{args.use_stain}'
@@ -151,6 +144,9 @@ def train_main(args):
 
     with open(os.path.join(save_root, 'args_rank{}.pkl'.format(int(os.environ["LOCAL_RANK"]))), 'wb') as fp:
         pickle.dump({'args': args}, fp)
+    if args.use_stain == 'True':
+        with open(os.path.join(save_root, '.USE_STAIN'), 'w') as fp:
+            pass
 
     if os.path.exists(os.path.join(save_root, 'snapshot_{}.pt'.format(args.max_epochs - 1))):
         print('done')
@@ -192,7 +188,7 @@ def train_main(args):
     train_dataset = PatchDataset(coords_df=train_coords_df, counts=train_counts, transform=train_transform, is_train=True, cache_root=os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'images'))
 
     train_dataloader = \
-        DataLoader(train_dataset, num_workers=4, batch_size=args.batch_size, pin_memory=True, shuffle=False, 
+        DataLoader(train_dataset, num_workers=8, batch_size=args.batch_size, pin_memory=True, shuffle=False, 
                 sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=False))
 
     ### model related
@@ -214,96 +210,6 @@ def train_main(args):
     dist.destroy_process_group()
 
 
-def test_main(args):
-    
-    ckpt_paths = []
-    for ckpt_path in glob.glob(os.path.join(args.ckpt_dir, 'snapshot_*.pt')):
-        save_dir = ckpt_path.replace('.pt', '')
-        if not os.path.isdir(save_dir):
-            ckpt_paths.append(ckpt_path)
-
-    if len(ckpt_paths) == 0:
-        return
-
-    with open(os.path.join(args.ckpt_dir, 'args_rank0.pkl'), 'rb') as fp:
-        args = pickle.load(fp)['args']
-
-    val_df = pd.read_excel(args.val_csv) if 'xlsx' in args.val_csv else pd.read_csv(args.val_csv)
-
-    with open(os.path.join(args.data_root, 'exp_smooth{}'.format(args.use_smooth), 'gene_infos.pkl'), 'rb') as fp:
-        gene_names = pickle.load(fp)['gene_names']
-    
-    ### model related
-    model = STModel(backbone=args.backbone, num_outputs=len(gene_names))
-    snapshot = torch.load(ckpt_path, map_location='cpu', weights_only=True)
-    model.load_state_dict(snapshot["MODEL_STATE"])
-    model.cuda()
-    model.eval()
-
-    ### data realted
-    if True:  # use imagenet mean and std
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
-
-    val_transform = transforms.Compose([
-        transforms.Resize((224, 224)), 
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std)
-    ])
-
-    for ckpt_path in ckpt_paths:
-        save_dir = ckpt_path.replace('.pt', '')
-        os.makedirs(save_dir, exist_ok=True)
-
-        for rowid, row in val_df.iterrows():
-            save_prefix = '{}_{}_{}'.format(row['cohort_name'], row['data_version'], row['slide_id'])
-            coord_df = pd.read_csv(os.path.join(args.data_root, save_prefix+'_coord.csv'))
-            count_pt = torch.load(os.path.join(args.data_root, 'exp_smooth{}'.format(args.use_smooth), save_prefix+'_gene_count.pth'), weights_only=True)
-            coord_df.index = np.arange(len(coord_df))
-
-            dataset = PatchDataset(coords_df=coord_df, counts=count_pt, transform=val_transform, is_train=False, cache_root=os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'images'))
-
-            dataloader = DataLoader(dataset, num_workers=4, batch_size=4 * args.batch_size, pin_memory=True, shuffle=False, drop_last=False)
-
-            preds = []
-            for batch_idx, (images_batch, labels_batch) in enumerate(dataloader):
-                images_batch = images_batch.cuda()
-                with torch.no_grad():
-                    preds_batch = model(images_batch)
-                    preds.append(preds_batch.cpu().numpy())
-            preds = np.concatenate(preds)  # num_spots x num_genes
-
-            labels = count_pt.numpy()
-            total_loss = mean_squared_error(labels, preds)
-
-            r2scores = np.zeros(preds.shape[1])
-            spearmanr_corrs = np.zeros(preds.shape[1])
-            spearmanr_pvals = np.zeros(preds.shape[1])
-            pearsonr_corrs = np.zeros(preds.shape[1])
-            pearsonr_pvals = np.zeros(preds.shape[1])
-            for j in range(preds.shape[1]):
-                r2scores[j] = r2_score(labels[:, j], preds[:, j])
-
-                res = spearmanr(preds[:, j], labels[:, j])
-                spearmanr_corrs[j] = res.statistic
-                spearmanr_pvals[j] = res.pvalue
-
-                res = pearsonr(preds[:, j], labels[:, j])
-                pearsonr_corrs[j] = res.statistic
-                pearsonr_pvals[j] = res.pvalue
-
-            scores = {
-                'total_loss': total_loss,
-                'r2score': r2scores, 
-                'spearmanr_corr': spearmanr_corrs, 
-                'spearmanr_pvalue': spearmanr_pvals, 
-                'pearsonr_corr': pearsonr_corrs, 
-                'pearsonr_pvalue': pearsonr_pvals
-            }
-
-            with open(os.path.join(save_dir, save_prefix + '_results.pkl'), 'wb') as fp:
-                pickle.dump({'scores': scores}, fp)
-            
 
 if __name__ == '__main__':
     args = get_args()
