@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score, mean_squared_error
 from scipy.stats import spearmanr, pearsonr
+from matplotlib import pyplot as plt
 
 import torch
 from torchvision import transforms
@@ -40,6 +41,7 @@ def draw_figures(args):
     ckpt_paths = glob.glob(os.path.join(ckpt_dir, 'snapshot_*.pt'))
     num_epochs = len(ckpt_paths)
 
+    bins = [-np.nan] + np.arange(0, 1, 0.1).tolist() + [np.nan]
     keys = ['total_loss', 'r2score', 'spearmanr_corr', 'spearmanr_pvalue', 'pearsonr_corr', 'pearsonr_pvalue']
     for rowid, row in sub_df.iterrows():
         save_prefix = '{}_{}_{}'.format(row['cohort_name'], row['data_version'], row['slide_id'])
@@ -57,6 +59,11 @@ def draw_figures(args):
             res_df = pd.DataFrame(results[k], columns=[k] if k == 'total_loss' else trained_gene_names)
             res_df.to_csv(os.path.join(ckpt_dir, '{}_{}.csv'.format(save_prefix, k)), float_format='%.9f' if 'pvalue' in k else '%.3f')
 
+            if k in ['r2score', 'spearmanr_corr', 'pearsonr_corr']:
+                plt.hist(res_df.values[-1, :], bins=bins)
+                plt.savefig(os.path.join(ckpt_dir, '{}_{}_hist.png'.format(save_prefix, k)))
+                plt.close('all')
+            
         print(save_prefix)
 
 

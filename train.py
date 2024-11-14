@@ -133,6 +133,19 @@ class Trainer:
                 self._save_snapshot(epoch)
 
 
+def get_params_groups(model):
+    regularized = []
+    not_regularized = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        # we do not regularize biases nor Norm parameters
+        if name.endswith(".bias") or len(param.shape) == 1:
+            not_regularized.append(param)
+        else:
+            regularized.append(param)
+    return [{'params': regularized}, {'params': not_regularized, 'weight_decay': 0.}]
+
 
 def train_main(args):
 

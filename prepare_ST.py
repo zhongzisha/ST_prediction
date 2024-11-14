@@ -212,7 +212,8 @@ def main(args):
             tmp = json.load(fp)
             spot_size = float(tmp['spot_diameter_fullres'])
             fiducial_diameter_fullres = float(tmp['fiducial_diameter_fullres'])
-            spot_size = int(spot_size)
+            # spot_size = int(spot_size)
+            spot_size = int(fiducial_diameter_fullres)
             patch_size = spot_size
 
         if 'tissue_positions_list' in row['coord_filename']:

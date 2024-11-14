@@ -20,8 +20,9 @@ fi
 export OMP_NUM_THREADS=8
 
 CKPT_DIR=${1}
+DATA_ROOT=${2}
 
-srun --export ALL --jobid $SLURM_JOB_ID bash data.sh ${CKPT_DIR}
+srun --export ALL --jobid $SLURM_JOB_ID bash data.sh ${CKPT_DIR} ${DATA_ROOT}
 
 wait
 
@@ -29,7 +30,8 @@ cd $current_dir
 
 srun --export ALL --jobid $SLURM_JOB_ID python test.py \
 --action "test" \
---ckpt_dir ${CKPT_DIR}
+--ckpt_dir ${CKPT_DIR} \
+--data_root ${DATA_ROOT}
 
 
 exit;
@@ -37,9 +39,14 @@ exit;
 
 CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-06_b128_e100_accum1_v0_smoothTrue_stainTrue"
 
-CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-05_b128_e200_accum1_v0_smoothTrue_stainTrue"
-sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:v100x:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
-test.sh ${CKPT_DIR}
+CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-06_b128_e200_accum1_v0_smoothTrue_stainTrue"
+
+CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-06_b128_e300_accum1_v0_smoothTrue_stainTrue"
+# CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-05_b128_e500_accum1_v0_smoothTrue_stainTrue"
+
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data"
+sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
+test.sh ${CKPT_DIR} ${DATA_ROOT}
 
 
 

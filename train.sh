@@ -27,14 +27,15 @@ USE_SMOOTH=${5}
 FIX_BACKBONE=${6}
 MAX_EPOCHS=${7}
 USE_STAIN=${8}
+DATA_ROOT=${9}
 
 cd $CACHE_ROOT
 mkdir images
 cd images
 if [ "${USE_STAIN}" == "True" ]; then
-for f in `ls /data/zhongz2/temp29/ST_prediction_data/TNBC*_patches_stain.tar.gz`; do tar -xf $f; done
+for f in `ls ${DATA_ROOT}/TNBC*_patches_stain.tar.gz`; do tar -xf $f; done
 else
-for f in `ls /data/zhongz2/temp29/ST_prediction_data/TNBC*_patches.tar.gz`; do tar -xf $f; done
+for f in `ls ${DATA_ROOT}/TNBC*_patches.tar.gz`; do tar -xf $f; done
 fi
 
 cd $current_dir
@@ -62,7 +63,8 @@ torchrun \
     --fixed_backbone ${FIX_BACKBONE} \
     --use_smooth ${USE_SMOOTH} \
     --use_stain ${USE_STAIN} \
-    --max_epochs ${MAX_EPOCHS}
+    --max_epochs ${MAX_EPOCHS} \
+    --data_root ${DATA_ROOT}
 
 exit;
 
@@ -70,16 +72,18 @@ exit;
 
 # debug
 NUM_GPUS=2
-MAX_EPOCHS=500
+MAX_EPOCHS=200
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data"
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial"
 for BACKBONE in "resnet50"; do
 for VAL_INDEX in "None"; do
-for LR in 1e-5; do
+for LR in 1e-6; do
 for BS in 128; do
 for FIX_BACKBONE in "True"; do
 for USE_SMOOTH in "True"; do
 for USE_STAIN in "True"; do
 sbatch --ntasks=1 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:${NUM_GPUS},lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=100G \
-train.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${MAX_EPOCHS} ${USE_STAIN}
+train.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${MAX_EPOCHS} ${USE_STAIN} ${DATA_ROOT}
 done
 done
 done

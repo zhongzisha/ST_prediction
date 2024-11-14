@@ -14,6 +14,8 @@ from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from timm.layers import set_layer_config
 from timm.models import is_model, model_entrypoint, load_checkpoint
+from timm.models.layers import to_2tuple
+
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -26,7 +28,8 @@ BACKBONE_DICT = {
     'ProvGigaPath': 1536,
     # 'CONCH': 512,
     'CONCH': 768,
-    'UNI': 1024
+    'UNI': 1024,
+    'CTransPath': 768
 }
 
 
@@ -110,6 +113,48 @@ def create_model():
     return model
 
 
+class ConvStem(nn.Module):
+    def __init__(self, img_size=224, patch_size=4, in_chans=3, embed_dim=768, norm_layer=None, flatten=True,
+            output_fmt=None,
+            bias=True,
+            strict_img_size=True,
+            dynamic_img_pad=False):
+        super().__init__()
+
+        assert patch_size == 4
+        assert embed_dim % 8 == 0
+
+        img_size = to_2tuple(img_size)
+        patch_size = to_2tuple(patch_size)
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.grid_size = (img_size[0] // patch_size[0], img_size[1] // patch_size[1])
+        self.num_patches = self.grid_size[0] * self.grid_size[1]
+        self.flatten = flatten
+
+
+        stem = []
+        input_dim, output_dim = 3, embed_dim // 8
+        for l in range(2):
+            stem.append(nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=2, padding=1, bias=False))
+            stem.append(nn.BatchNorm2d(output_dim))
+            stem.append(nn.ReLU(inplace=True))
+            input_dim = output_dim
+            output_dim *= 2
+        stem.append(nn.Conv2d(input_dim, embed_dim, kernel_size=1))
+        self.proj = nn.Sequential(*stem)
+
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj(x)
+        if self.flatten:
+            x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
+        x = self.norm(x)
+        return x
 
 
 class STModel(nn.Module):
@@ -157,6 +202,9 @@ class STModel(nn.Module):
         elif backbone == 'PLIP':
             self.backbone_model = CLIPModel.from_pretrained("./backbones/vinid_plip")
             self.image_processor = CLIPProcessor.from_pretrained("./backbones/vinid_plip")
+        elif backbone == 'CTransPath':
+            self.backbone_model = timm.create_model('swin_tiny_patch4_window7_224', embed_layer=ConvStem, pretrained=False)
+            self.backbone_model.load_state_dict(torch.load("./backbones/ctranspath.pth", map_location="cpu", weights_only=True)['model'], strict=True)
         else:
             raise ValueError('error')
 
