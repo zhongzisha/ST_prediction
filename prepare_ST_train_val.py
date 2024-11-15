@@ -42,19 +42,29 @@ def get_args():
     parser.add_argument('--data_root', type=str, default='/data/zhongz2/temp29/ST_prediction_data')
     parser.add_argument('--use_smooth', type=str, default="True")
     parser.add_argument('--gene_names', type=str, default='/data/zhongz2/temp29/ST_prediction/data/TNBC_generated_0.05_smooth_stain/valid_genes.pkl')
+    
     return parser.parse_args()
 
 
-def get_gene_infos(args, df, gene_names):
+def get_gene_infos(args, df, gene_names, cache_root):
 
     all_count_df = []
-
+    image_mean, image_std = [], []
+    image_mean_stain, image_std_stain = [], []
     for rowid, row in df.iterrows():
 
         save_prefix = '{}_{}_{}'.format(row['cohort_name'], row['data_version'], row['slide_id'])
         print(save_prefix)
 
         gene_count_filename = os.path.join(args.data_root, save_prefix+'_gene_count_smooth.parquet' if args.use_smooth == "True" else save_prefix+'_gene_count.parquet')
+        with open(os.path.join(args.data_root, save_prefix+'_patches_meanstd.json'), 'r') as fp:
+            data = json.load(fp)
+            image_mean.append(data['mean'])
+            image_std.append(data['std'])
+        with open(os.path.join(args.data_root, save_prefix+'_patches_stain_meanstd.json'), 'r') as fp:
+            data = json.load(fp)
+            image_mean_stain.append(data['mean'])
+            image_std_stain.append(data['std'])
 
         parquet_file = pq.ParquetFile(gene_count_filename)
         existing_columns = parquet_file.schema.names
@@ -69,6 +79,11 @@ def get_gene_infos(args, df, gene_names):
     count_df = pd.concat(all_count_df)
     del all_count_df
 
+    image_mean = np.array(image_mean).mean(axis=0).tolist()
+    image_std = np.array(image_std).mean(axis=0).tolist()
+    image_mean_stain = np.array(image_mean_stain).mean(axis=0).tolist()
+    image_std_stain = np.array(image_std_stain).mean(axis=0).tolist()
+
     # remove the genes with all identity values, e.g. all zeros
     nunique = count_df.nunique()
     cols_to_drop = nunique[nunique == 1].index
@@ -79,7 +94,17 @@ def get_gene_infos(args, df, gene_names):
     gene_scaler = MinMaxScaler()
     gene_scaler.fit(count_df)
 
-    return gene_scaler, valid_gene_names
+    with open(os.path.join(cache_root, 'gene_infos.pkl'), 'wb') as fp:
+        pickle.dump({
+            'gene_scaler': gene_scaler, 
+            'gene_names': valid_gene_names,
+            'image_mean': image_mean,
+            'image_std': image_std,
+            'image_mean_stain': image_mean_stain,
+            'image_std_stain': image_std_stain
+        }, fp)
+
+    return gene_scaler, valid_gene_names, 
 
 
 def generate_normalized_data(args, df, gene_names, gene_scaler, cache_root, prefix='train'):
@@ -162,14 +187,12 @@ def main(args):
     train_df = pd.read_excel(args.train_csv) if 'xlsx' in args.train_csv else pd.read_csv(args.train_csv)
     val_df = pd.read_excel(args.val_csv) if 'xlsx' in args.val_csv else pd.read_csv(args.val_csv)
 
-    gene_scaler, valid_gene_names = get_gene_infos(args, train_df, gene_names)
-    with open(os.path.join(cache_root, 'gene_infos.pkl'), 'wb') as fp:
-        pickle.dump({'gene_scaler': gene_scaler, 'gene_names': valid_gene_names}, fp)
+    gene_scaler, valid_gene_names = get_gene_infos(args, train_df, gene_names, cache_root)
 
     generate_normalized_data(args, train_df, valid_gene_names, gene_scaler, cache_root, prefix='train')
     generate_normalized_data(args, val_df, valid_gene_names, gene_scaler, cache_root, prefix='val')
 
-    draw_histogram(args, cache_root)
+    # draw_histogram(args, cache_root)
 
 
 if __name__ == '__main__':

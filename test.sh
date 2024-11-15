@@ -48,15 +48,23 @@ DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data"
 sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
 test.sh ${CKPT_DIR} ${DATA_ROOT}
 
+CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data_fiducial/exp_smoothTrue/results/gpus2/backboneresnet50_fixedTrue/lr1e-06_b128_e200_accum1_v0_smoothTrue_stainTrue"
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial"
+sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
+test.sh ${CKPT_DIR} ${DATA_ROOT}
 
 
 
 
+CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data_fiducial/exp_smoothTrue/results/gpus2/backboneCTransPath_fixedTrue/lr1e-06_b128_e200_accum1_v0_smoothTrue_stainTrue"
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial"
+sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
+test.sh ${CKPT_DIR} ${DATA_ROOT}
 
-
-
-
-
+CKPT_DIR="/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd/exp_smoothTrue/results/gpus2/backboneCTransPath_fixedTrue/lr1e-06_b128_e200_accum1_v0_smoothTrue_stainTrue_imagenetTrue"
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd"
+sbatch --ntasks=8 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:1,lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=32G \
+test.sh ${CKPT_DIR} ${DATA_ROOT}
 
 
 

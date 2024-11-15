@@ -29,6 +29,8 @@ CSV_FILENAME="/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx"
 CSV_FILENAME="/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx"
 SAVE_ROOT="/data/zhongz2/temp29/ST_prediction_data"
 SAVE_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial"
+SAVE_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd"
+mkdir -p $SAVE_ROOT
 sbatch --time=24:00:00 \
     --ntasks=16 \
     --ntasks-per-node=1 \
@@ -67,3 +69,16 @@ python prepare_ST_train_val.py \
 --data_root "/data/zhongz2/temp29/ST_prediction_data_fiducial" \
 --use_smooth "True"
 
+
+python prepare_ST_train_val.py \
+--train_csv "/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx" \
+--val_csv "/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx" \
+--data_root "/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd" \
+--use_smooth "False"
+
+
+python prepare_ST_train_val.py \
+--train_csv "/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx" \
+--val_csv "/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx" \
+--data_root "/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd" \
+--use_smooth "True"

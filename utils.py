@@ -20,6 +20,7 @@ def get_args():
     parser.add_argument('--fixed_backbone', type=str, default="True")
     parser.add_argument('--use_smooth', type=str, default="True")
     parser.add_argument('--use_stain', type=str, default="True")
+    parser.add_argument('--use_imagenet_meanstd', type=str, default="True")
     parser.add_argument('--train_csv', type=str, default='/data/zhongz2/temp29/ST_prediction/data/TNBC_new.xlsx')
     parser.add_argument('--val_csv', type=str, default='/data/zhongz2/temp29/ST_prediction/data/10xBreast.xlsx')
     parser.add_argument('--data_root', type=str, default='/data/zhongz2/temp29/ST_prediction_data')

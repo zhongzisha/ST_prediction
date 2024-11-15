@@ -15,7 +15,6 @@ from timm.data.transforms_factory import create_transform
 from timm.layers import set_layer_config
 from timm.models import is_model, model_entrypoint, load_checkpoint
 from timm.models.layers import to_2tuple
-
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -203,7 +202,14 @@ class STModel(nn.Module):
             self.backbone_model = CLIPModel.from_pretrained("./backbones/vinid_plip")
             self.image_processor = CLIPProcessor.from_pretrained("./backbones/vinid_plip")
         elif backbone == 'CTransPath':
-            self.backbone_model = timm.create_model('swin_tiny_patch4_window7_224', embed_layer=ConvStem, pretrained=False)
+            from swin_transformer import SwinTransformer
+            # self.backbone_model = timm.create_model('swin_tiny_patch4_window7_224', embed_layer=ConvStem, pretrained=False)
+            model_kwargs = dict(
+                patch_size=4, window_size=7, embed_dim=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24),
+                embed_layer=ConvStem, pretrained=False
+            )
+            self.backbone_model = SwinTransformer(**model_kwargs)
+            self.backbone_model.head = nn.Identity()
             self.backbone_model.load_state_dict(torch.load("./backbones/ctranspath.pth", map_location="cpu", weights_only=True)['model'], strict=True)
         else:
             raise ValueError('error')
@@ -236,7 +242,7 @@ class STModel(nn.Module):
         
         if self.backbone in ['PLIP', 'CLIP']:
             h = self.backbone_model.get_image_features(x)
-        elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath', 'CONCH']:
+        elif self.backbone in ['resnet50', 'UNI', 'ProvGigaPath', 'CONCH', 'CTransPath']:
             h = self.backbone_model(x)
 
         h = self.rho(h)

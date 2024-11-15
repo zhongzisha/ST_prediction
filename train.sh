@@ -28,6 +28,7 @@ FIX_BACKBONE=${6}
 MAX_EPOCHS=${7}
 USE_STAIN=${8}
 DATA_ROOT=${9}
+USE_IMAGENET_MEANSTD=${10}
 
 cd $CACHE_ROOT
 mkdir images
@@ -64,7 +65,8 @@ torchrun \
     --use_smooth ${USE_SMOOTH} \
     --use_stain ${USE_STAIN} \
     --max_epochs ${MAX_EPOCHS} \
-    --data_root ${DATA_ROOT}
+    --data_root ${DATA_ROOT} \
+    --use_imagenet_meanstd ${USE_IMAGENET_MEANSTD}
 
 exit;
 
@@ -75,7 +77,9 @@ NUM_GPUS=2
 MAX_EPOCHS=200
 DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data"
 DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial"
-for BACKBONE in "resnet50"; do
+DATA_ROOT="/data/zhongz2/temp29/ST_prediction_data_fiducial_meanstd"
+USE_IMAGENET_MEANSTD="True"
+for BACKBONE in "CTransPath"; do
 for VAL_INDEX in "None"; do
 for LR in 1e-6; do
 for BS in 128; do
@@ -83,7 +87,7 @@ for FIX_BACKBONE in "True"; do
 for USE_SMOOTH in "True"; do
 for USE_STAIN in "True"; do
 sbatch --ntasks=1 --tasks-per-node=1 --partition=gpu --gres=gpu:a100:${NUM_GPUS},lscratch:64 --cpus-per-task=10 --time=108:00:00 --mem=100G \
-train.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${MAX_EPOCHS} ${USE_STAIN} ${DATA_ROOT}
+train.sh ${NUM_GPUS} ${BACKBONE} ${LR} ${BS} ${USE_SMOOTH} ${FIX_BACKBONE} ${MAX_EPOCHS} ${USE_STAIN} ${DATA_ROOT} ${USE_IMAGENET_MEANSTD}
 done
 done
 done

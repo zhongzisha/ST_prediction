@@ -178,8 +178,6 @@ def get_args():
 
 def main(args):
 
-    os.makedirs(args.save_root, exist_ok=True)
-
     if 'xlsx' == args.csv_filename[-4:]:
         df = pd.read_excel(args.csv_filename)
     else:
@@ -271,6 +269,10 @@ def main(args):
 
         coord_df = coord_df.loc[[v for v in counts_df.index.values if v in coord_df.index.values]] # only keep those spots with gene counts
 
+        if len(coord_df) == 0:
+            raise ValueError("coord_df is null")
+            continue
+
         save_filename = os.path.join(args.save_root, save_prefix+'_patches.tar.gz')
         save_filename2 = os.path.join(args.save_root, save_prefix+'_patches_stain.tar.gz')
 
@@ -281,6 +283,9 @@ def main(args):
 
         filenames = []
         invalid_inds = []
+        meanstd = pd.DataFrame(np.zeros((len(coord_df), 12), dtype=np.float32)) # mean,std,mean_stain,std_stain
+        meanstd.index = coord_df.index.values
+        meanstd_column_inds = np.array_split(np.arange(12), 4)
         for rowind1, row1 in coord_df.iterrows():
             xc, yc = row1[X_col_name], row1[Y_col_name]
             patch = slide.read_region((int(xc - patch_size//2), int(yc - patch_size//2)), 0, (patch_size, patch_size)).convert('RGB')
@@ -295,6 +300,10 @@ def main(args):
             im_buffer.seek(0)
             tar_fp.addfile(info, im_buffer)
             filenames.append(filename)
+
+            patch1 = np.array(patch, dtype=np.float32) / 255
+            meanstd.loc[rowind1, meanstd_column_inds[0]] = patch1.mean((0, 1))
+            meanstd.loc[rowind1, meanstd_column_inds[1]] = patch1.std((0, 1))
 
             try:
                 patch_stain = normalizeStaining(np.array(patch))
@@ -312,6 +321,10 @@ def main(args):
             im_buffer.seek(0)
             tar_fp2.addfile(info, im_buffer)
 
+            patch_stain = np.array(patch_stain, dtype=np.float32) / 255
+            meanstd.loc[rowind1, meanstd_column_inds[2]] = patch_stain.mean((0, 1))
+            meanstd.loc[rowind1, meanstd_column_inds[3]] = patch_stain.std((0, 1))
+
         slide.close()
         tar_fp.close()
         with open(save_filename, 'wb') as fp:
@@ -326,7 +339,14 @@ def main(args):
         if len(invalid_inds) > 0:
             coord_df = coord_df.drop(invalid_inds)
             counts_df.drop(invalid_inds, inplace=True)
+            meanstd.drop(invalid_inds, inplace=True)
         
+        mean,std,mean_stain,std_stain = np.array_split(meanstd.mean(axis=0).values, 4)
+        with open(os.path.join(args.save_root, save_prefix+'_patches_meanstd.json'), 'w') as fp:
+            json.dump({'mean': mean.tolist(), 'std': std.tolist()}, fp)
+        with open(os.path.join(args.save_root, save_prefix+'_patches_stain_meanstd.json'), 'w') as fp:
+            json.dump({'mean': mean_stain.tolist(), 'std': std_stain.tolist()}, fp)
+
         coord_df.to_csv(os.path.join(args.save_root, save_prefix+'_coord.csv'))
         counts_df.to_parquet(os.path.join(args.save_root, save_prefix+'_gene_count.parquet'), engine='fastparquet')
 

@@ -152,7 +152,7 @@ def train_main(args):
     dist.init_process_group(backend="nccl")
 
     cache_root = os.path.join(args.data_root, 'exp_smooth{}'.format(args.use_smooth))
-    save_root = f'{cache_root}/results/gpus{args.num_gpus}/backbone{args.backbone}_fixed{args.fixed_backbone}/lr{args.lr}_b{args.batch_size}_e{args.max_epochs}_accum{args.accum_iter}_v0_smooth{args.use_smooth}_stain{args.use_stain}'
+    save_root = f'{cache_root}/results/gpus{args.num_gpus}/backbone{args.backbone}_fixed{args.fixed_backbone}/lr{args.lr}_b{args.batch_size}_e{args.max_epochs}_accum{args.accum_iter}_v0_smooth{args.use_smooth}_stain{args.use_stain}_imagenet{args.use_imagenet_meanstd}'
     os.makedirs(save_root, exist_ok=True)
 
     with open(os.path.join(save_root, 'args_rank{}.pkl'.format(int(os.environ["LOCAL_RANK"]))), 'wb') as fp:
@@ -166,16 +166,28 @@ def train_main(args):
         sys.exit(-1)
 
     with open(os.path.join(cache_root, 'gene_infos.pkl'), 'rb') as fp:
-        gene_names = pickle.load(fp)['gene_names']
-    
+        data = pickle.load(fp)
+        gene_names = data['gene_names']
+        try:
+            if args.use_stain == 'True':
+                image_mean, image_std = data['image_mean_stain'], data['image_std_stain']
+            else:
+                image_mean, image_std = data['image_mean'], data['image_std']
+        except:
+            image_mean, image_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        
     train_df = pd.read_excel(args.train_csv) if 'xlsx' in args.train_csv else pd.read_csv(args.train_csv)
 
     ### data realted
-    if True:  # use imagenet mean and std
+    if args.use_imagenet_meanstd == 'True':  # use imagenet mean and std
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
+    else:
+        mean = image_mean
+        std = image_std
 
     train_transform = transforms.Compose([
+        # transforms.RandomCrop(),
         transforms.Resize((224, 224)), 
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),

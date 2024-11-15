@@ -93,8 +93,16 @@ def test_main(args):
     df = pd.read_excel(args.val_csv) if 'xlsx' in args.val_csv else pd.read_csv(args.val_csv)
 
     with open(os.path.join(args.data_root, 'exp_smooth{}'.format(args.use_smooth), 'gene_infos.pkl'), 'rb') as fp:
-        gene_names = pickle.load(fp)['gene_names']
-    
+        data = pickle.load(fp)
+        gene_names = data['gene_names']
+        try:
+            if args.use_stain == 'True':
+                image_mean, image_std = data['image_mean_stain'], data['image_std_stain']
+            else:
+                image_mean, image_std = data['image_mean'], data['image_std']
+        except:
+            image_mean, image_std = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        
     ### model related
     model = STModel(backbone=args.backbone, num_outputs=len(gene_names))
     snapshot = torch.load(ckpt_path, map_location='cpu', weights_only=True)
@@ -102,8 +110,15 @@ def test_main(args):
     model.cuda()
     model.eval()
 
-    ### data realted
-    if True:  # use imagenet mean and std
+    ### data related
+    try:
+        if args.use_imagenet_meanstd == 'True':  # use imagenet mean and std
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        else:
+            mean = image_mean
+            std = image_std
+    except:
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
